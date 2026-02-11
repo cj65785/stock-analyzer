@@ -4,6 +4,7 @@ import asyncio
 import pandas as pd
 from datetime import datetime
 from openai import AsyncOpenAI
+from io import BytesIO
 from database import Database
 from analyzer import (
     Config, RegexCache, DartProcessor, 
@@ -40,18 +41,14 @@ db = get_database()
 @st.cache_resource
 def get_config():
     return Config(
-        CLIENT_ID=st.secrets["NAVER_CLIENT_ID"],
-        CLIENT_SECRET=st.secrets["NAVER_CLIENT_SECRET"],
-        DART_API_KEY=st.secrets["DART_API_KEY"],
-        OPENAI_API_KEY=st.secrets["OPENAI_API_KEY"]
+        CLIENT_ID=st.secrets.get("NAVER_CLIENT_ID"),
+        CLIENT_SECRET=st.secrets.get("NAVER_CLIENT_SECRET"),
+        DART_API_KEY=st.secrets.get("DART_API_KEY"),
+        OPENAI_API_KEY=st.secrets.get("OPENAI_API_KEY")
     )
 
-try:
-    config = get_config()
-    openai_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
-except:
-    st.error("⚠️ API 키를 설정해주세요. `.streamlit/secrets.toml` 파일을 확인하세요.")
-    st.stop()
+config = get_config()
+openai_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 
 # 상장사 목록 로드
 @st.cache_resource
@@ -209,17 +206,23 @@ async def analyze_company(company_name: str, progress_callback=None):
 st.title("📊 종목 분석 게시판")
 st.markdown("---")
 
-# 탭 생성
-tab1, tab2 = st.tabs(["🚀 새 분석", "📋 전체 결과"])
+# 탭 생성 (3개로 확장)
+tab1, tab2, tab3 = st.tabs(["🚀 새 분석", "📋 전체 결과", "⭐ 즐겨찾기"])
 
 # ===== 탭 1: 새 분석 =====
 with tab1:
     st.header("🚀 새 분석 시작")
     
+    # 세션 상태 초기화
+    if 'pending_companies' not in st.session_state:
+        st.session_state.pending_companies = []
+    
     companies_input = st.text_area(
         "종목명 입력 (줄바꿈으로 구분)",
+        value='\n'.join(st.session_state.pending_companies) if st.session_state.pending_companies else "",
         placeholder="삼성전자\nSK하이닉스\n케어젠",
-        height=150
+        height=150,
+        key="companies_input"
     )
     
     col1, col2 = st.columns([1, 4])
@@ -231,23 +234,19 @@ with tab1:
             st.warning("⚠️ 종목명을 입력해주세요.")
         else:
             companies_list = [c.strip() for c in companies_input.split('\n') if c.strip()]
+            st.session_state.pending_companies = companies_list.copy()
             
-            # 종목명 검증
-            # 종목명 검증 (경고만, 계속 진행)
-            if ALL_COMPANIES:
-                invalid = []
-                for company in companies_list:
-                    if company not in ALL_COMPANIES and company.replace(" ", "") not in ALL_COMPANIES:
-                        invalid.append(company)
-                
-                if invalid:
-                    st.warning(f"⚠️ 다음 종목이 목록에 없습니다 (분석은 진행됩니다): {', '.join(invalid)}")
+            # 이미 분석된 종목 확인
+            analyzed = db.get_analyzed_companies()
             
             st.success(f"✅ 총 {len(companies_list)}개 종목 분석 시작")
             
             # 프로그레스 바
             progress_bar = st.progress(0)
             status_text = st.empty()
+            
+            processed = []
+            failed = []
             
             # 비동기 실행
             for idx, company in enumerate(companies_list):
@@ -259,25 +258,42 @@ with tab1:
                 try:
                     result = asyncio.run(analyze_company(company, update_status))
                     st.success(f"✅ {company} 완료")
+                    processed.append(company)
+                    
+                    # 처리 완료된 종목 제거
+                    if company in st.session_state.pending_companies:
+                        st.session_state.pending_companies.remove(company)
+                    
                 except Exception as e:
                     st.error(f"❌ {company} 오류: {e}")
+                    failed.append(company)
                 
                 progress_bar.progress((idx + 1) / len(companies_list))
             
-            status_text.text("✨ 모든 분석 완료!")
+            status_text.text("✨ 분석 완료!")
             st.balloons()
             
-            # 자동으로 전체 결과 탭으로 이동 안내
-            st.info("👉 '전체 결과' 탭에서 결과를 확인하세요!")
+            # 미처리 목록 확인
+            if failed:
+                st.error(f"❌ 미처리 종목 ({len(failed)}개): {', '.join(failed)}")
+                if st.button("🔄 미처리 종목 재시도"):
+                    st.session_state.pending_companies = failed
+                    st.rerun()
+            else:
+                st.session_state.pending_companies = []
+            
+            # 결과 요약
+            st.info(f"✅ 성공: {len(processed)}개 | ❌ 실패: {len(failed)}개")
+            st.info("👉 '전체 결과' 또는 '즐겨찾기' 탭에서 결과를 확인하세요!")
 
 # ===== 탭 2: 전체 결과 =====
 with tab2:
     st.header("📋 전체 결과")
     
-    # 검색 & 정렬
+    # 검색 & 통계
     col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
-        search_keyword = st.text_input("🔍 검색", placeholder="종목명 입력")
+        search_keyword = st.text_input("🔍 검색", placeholder="종목명 입력", key="search_all")
     with col2:
         st.write("")  # 간격
     with col3:
@@ -288,41 +304,28 @@ with tab2:
     if search_keyword:
         results = db.search_results(search_keyword)
     else:
-        results = db.get_all_results(limit=50)
+        results = db.get_all_results(limit=100)
     
     if not results:
         st.info("📝 분석 결과가 없습니다. '새 분석' 탭에서 종목을 분석해보세요!")
     else:
         # 결과 표시
         for result in results:
-            # PostgreSQL은 datetime 객체를 직접 반환
             created_at = result['created_at']
             if isinstance(created_at, str):
                 created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
             date_str = created_at.strftime('%Y-%m-%d %H:%M')
             
+            # 북마크 상태
+            bookmark_icon = "⭐" if result.get('is_bookmarked') else "☆"
+            
             with st.expander(f"📌 {result['company_name']} - {date_str}"):
-                # 삭제 버튼
-                col_del1, col_del2 = st.columns([5, 1])
-                # 삭제 버튼 부분 전체를 이렇게 교체:
-                with col_del2:
-                    delete_key = f"delete_confirm_{result['id']}"
-                    if delete_key not in st.session_state:
-                        st.session_state[delete_key] = False
-                    
-                    if not st.session_state[delete_key]:
-                        if st.button("🗑️ 삭제", key=f"del_{result['id']}"):
-                            st.session_state[delete_key] = True
-                    else:
-                        col_confirm1, col_confirm2 = st.columns(2)
-                        with col_confirm1:
-                            if st.button("✅ 확인", key=f"confirm_{result['id']}"):
-                                db.delete_result(result['id'])
-                                del st.session_state[delete_key]
-                                st.success("삭제됨")
-                        with col_confirm2:
-                            if st.button("❌ 취소", key=f"cancel_{result['id']}"):
-                                st.session_state[delete_key] = False
+                # 북마크 버튼
+                col_bookmark, col_space = st.columns([1, 5])
+                with col_bookmark:
+                    if st.button(f"{bookmark_icon} 즐겨찾기", key=f"bookmark_{result['id']}"):
+                        db.toggle_bookmark(result['id'])
+                        st.rerun()
                 
                 # DART 결과
                 st.markdown('<div class="section-header">📊 DART 보고서 모멘텀</div>', unsafe_allow_html=True)
@@ -343,38 +346,73 @@ with tab2:
     if results:
         st.markdown("---")
         df = db.to_dataframe()
-        csv = df.to_csv(index=False, encoding='utf-8-sig')
+        
+        # Excel 파일로 변환
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='분석결과')
+        output.seek(0)
+        
         st.download_button(
-            label="📥 전체 결과 CSV 다운로드",
-            data=csv,
-            file_name=f"stock_analysis_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv"
+            label="📥 전체 결과 엑셀 다운로드",
+            data=output,
+            file_name=f"stock_analysis_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
-# 사이드바
-with st.sidebar:
-    st.header("ℹ️ 사용 방법")
-    st.markdown("""
-    1. **🚀 새 분석 탭**
-       - 종목명을 줄바꿈으로 입력
-       - 분석 시작 버튼 클릭
-       - 진행 상황 확인
+# ===== 탭 3: 즐겨찾기 =====
+with tab3:
+    st.header("⭐ 즐겨찾기")
     
-    2. **📋 전체 결과 탭**
-       - 과거 분석 결과 조회
-       - 검색 기능 사용
-       - 결과 삭제 가능
-       - CSV 다운로드
+    # 즐겨찾기 결과 조회
+    bookmarked_results = db.get_bookmarked_results()
     
-    3. **💡 팁**
-       - 어디서든 접속 가능
-       - 결과는 영구 저장
-       - 한 번에 여러 종목 분석
-    """)
-    
-    st.markdown("---")
-
-    st.caption("Made with ❤️ by Streamlit")
-
-
-
+    if not bookmarked_results:
+        st.info("⭐ 즐겨찾기한 종목이 없습니다. '전체 결과' 탭에서 ☆ 버튼을 클릭하세요!")
+    else:
+        st.success(f"📌 즐겨찾기: {len(bookmarked_results)}개")
+        
+        # 결과 표시
+        for result in bookmarked_results:
+            created_at = result['created_at']
+            if isinstance(created_at, str):
+                created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+            date_str = created_at.strftime('%Y-%m-%d %H:%M')
+            
+            with st.expander(f"⭐ {result['company_name']} - {date_str}"):
+                # 북마크 해제 버튼
+                if st.button("☆ 즐겨찾기 해제", key=f"unbookmark_{result['id']}"):
+                    db.toggle_bookmark(result['id'])
+                    st.rerun()
+                
+                # DART 결과
+                st.markdown('<div class="section-header">📊 DART 보고서 모멘텀</div>', unsafe_allow_html=True)
+                if result['dart_error']:
+                    st.warning(f"⚠️ {result['dart_error']}")
+                else:
+                    st.write(f"**보고서:** {result['dart_report']}")
+                    st.text(result['dart_result'])
+                
+                st.markdown("---")
+                
+                # 뉴스 결과
+                st.markdown('<div class="section-header">📰 뉴스 모멘텀 (최근 6개월)</div>', unsafe_allow_html=True)
+                st.write(f"**수집 기사:** {result['news_count']}건")
+                st.text(result['news_result'])
+        
+        # 엑셀 다운로드
+        st.markdown("---")
+        df_bookmarked = pd.DataFrame(bookmarked_results)
+        
+        # Excel 파일로 변환
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_bookmarked.to_excel(writer, index=False, sheet_name='즐겨찾기')
+        output.seek(0)
+        
+        st.download_button(
+            label="📥 즐겨찾기 엑셀 다운로드",
+            data=output,
+            file_name=f"bookmarked_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
