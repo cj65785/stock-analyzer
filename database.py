@@ -8,10 +8,6 @@ import os
 
 class Database:
     def __init__(self, connection_string: str = None):
-        """
-        connection_string: PostgreSQL 연결 문자열
-        예: postgresql://postgres:password@host:5432/postgres
-        """
         self.connection_string = connection_string or os.environ.get('DATABASE_URL')
         if not self.connection_string:
             raise ValueError("DATABASE_URL이 설정되지 않았습니다.")
@@ -37,9 +33,19 @@ class Database:
                 news_count INTEGER,
                 news_result TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                status TEXT DEFAULT '완료'
+                status TEXT DEFAULT '완료',
+                is_bookmarked BOOLEAN DEFAULT FALSE
             )
         ''')
+        
+        # is_bookmarked 컬럼이 없으면 추가 (기존 테이블 대응)
+        try:
+            cursor.execute('''
+                ALTER TABLE analysis_results 
+                ADD COLUMN IF NOT EXISTS is_bookmarked BOOLEAN DEFAULT FALSE
+            ''')
+        except:
+            pass
         
         # 인덱스 생성
         cursor.execute('''
@@ -49,6 +55,10 @@ class Database:
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_created_at 
             ON analysis_results(created_at DESC)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_bookmarked 
+            ON analysis_results(is_bookmarked)
         ''')
         
         conn.commit()
@@ -88,6 +98,39 @@ class Database:
         conn.close()
         
         return [dict(row) for row in results]
+    
+    def get_bookmarked_results(self) -> List[Dict]:
+        """북마크된 결과만 조회"""
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        cursor.execute('''
+            SELECT * FROM analysis_results 
+            WHERE is_bookmarked = TRUE
+            ORDER BY created_at DESC
+        ''')
+        
+        results = cursor.fetchall()
+        
+        cursor.close()
+        conn.close()
+        
+        return [dict(row) for row in results]
+    
+    def toggle_bookmark(self, result_id: int):
+        """북마크 토글"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE analysis_results 
+            SET is_bookmarked = NOT is_bookmarked 
+            WHERE id = %s
+        ''', (result_id,))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
     
     def search_results(self, keyword: str) -> List[Dict]:
         """종목명 검색"""
@@ -130,6 +173,19 @@ class Database:
         conn.close()
         
         return count
+    
+    def get_analyzed_companies(self) -> List[str]:
+        """분석 완료된 종목명 목록"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT DISTINCT company_name FROM analysis_results')
+        companies = [row[0] for row in cursor.fetchall()]
+        
+        cursor.close()
+        conn.close()
+        
+        return companies
     
     def to_dataframe(self) -> pd.DataFrame:
         """DataFrame 변환 (엑셀 다운로드용)"""
