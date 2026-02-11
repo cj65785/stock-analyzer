@@ -11,51 +11,43 @@ from urllib.parse import quote
 from bs4 import BeautifulSoup
 from difflib import SequenceMatcher
 from collections import defaultdict
-from dataclasses import dataclass
 
-@dataclass
 class Config:
-    CLIENT_ID: str
-    CLIENT_SECRET: str
-    DART_API_KEY: str
-    OPENAI_API_KEY: str
-    
-    MONTHS_AGO: int = 6
-    MAX_CONCURRENT: int = 10
-    REQUEST_TIMEOUT: int = 20
-    RETRY_COUNT: int = 3
-    MIN_BODY_LENGTH: int = 100
-    MAX_OTHER_COMPANIES: int = 5
-    SIMILARITY_THRESHOLD: float = 0.6
-    BODY_HEAD_CHECK: int = 2000
-    
-    KEYWORDS: List[str] = None
-    TITLE_BLACKLIST: List[str] = None
-    BODY_BLACKLIST: List[str] = None
-    
-    def __post_init__(self):
-        if self.KEYWORDS is None:
-            self.KEYWORDS = [
-                "매출", "수출", "계약", "수주", "출시", "허가", "양산", "인수", "진출", "신사업", "투자", "공급"
-            ]
+    def __init__(self, CLIENT_ID: str, CLIENT_SECRET: str, DART_API_KEY: str, OPENAI_API_KEY: str):
+        self.CLIENT_ID = CLIENT_ID
+        self.CLIENT_SECRET = CLIENT_SECRET
+        self.DART_API_KEY = DART_API_KEY
+        self.OPENAI_API_KEY = OPENAI_API_KEY
         
-        if self.TITLE_BLACKLIST is None:
-            self.TITLE_BLACKLIST = [
-                "특징주", "목표가", "신고가", "급락", "급등", "상한가", "폭등", "상승폭", "하락폭", "상승률",
-                "급등락", "장마감", "시황", "[특징주]", "[속보]","장을 마쳤다", "일 장중", "오늘의 주목주", "전날보다",
-                "상승 마감", "하락 마감", "주말뉴스 FULL", "팍스경제TV","동일업종 등락률", "거래일 종가", "투자 알고리즘",
-                "브리핑", "바이오스냅", "공시모음", "e공시", "e종목", "더밸류", "데일리인베스트", "IB토마토", "인포스탁",
-                "버핏 연구소", "리얼스탁", "한경유레카", "헬로스톡", "로보인베스팅", "골든클럽", "투자원정대", "오늘의 IR", "주요 공시", "IR Page",
-                "스포츠", "법률신문", "조세회계", "표창", "훈장","기념식", "후원", "선임", "광고",
-                "포럼", "증여", "상속", "수요예측", "문화대상", "브랜드평", "상장폐지", "로펌", "횡령", "VC 하우스", "주식쇼", "데이터랩",
-                "오류안내", "후속주", "로또", "평판지수", "브랜드평판", "지금이뉴스", "사외이사", "별세", "저PER", "사람인",
-                "사업자등록번호", "3파전", "엔지니어상", "장관 표창", "내달 퇴임", "소집공고", "지분 매각", "주식등의 대량보유자", "who is?",
-                "개인정보 항목", "면접 후기", "채용", "부시장", "민원처리반", "임금 체불", "총동문회", "점포거래소", "투자 핫플레이스",
-                "[상보]", "유료서비스", "marketin", "프리미엄", "simplywall", "AI리포터", "DealSite", "지속가능경영보고서"
-            ]
+        # 기본값들
+        self.MONTHS_AGO = 6
+        self.MAX_CONCURRENT = 10
+        self.REQUEST_TIMEOUT = 20
+        self.RETRY_COUNT = 3
+        self.MIN_BODY_LENGTH = 100
+        self.MAX_OTHER_COMPANIES = 5
+        self.SIMILARITY_THRESHOLD = 0.6
+        self.BODY_HEAD_CHECK = 2000
         
-        if self.BODY_BLACKLIST is None:
-            self.BODY_BLACKLIST = self.TITLE_BLACKLIST.copy()
+        self.KEYWORDS = [
+            "매출", "수출", "계약", "수주", "출시", "허가", "양산", "인수", "진출", "신사업", "투자", "공급"
+        ]
+        
+        self.TITLE_BLACKLIST = [
+            "특징주", "목표가", "신고가", "급락", "급등", "상한가", "폭등", "상승폭", "하락폭", "상승률",
+            "급등락", "장마감", "시황", "[특징주]", "[속보]","장을 마쳤다", "일 장중", "오늘의 주목주", "전날보다",
+            "상승 마감", "하락 마감", "주말뉴스 FULL", "팍스경제TV","동일업종 등락률", "거래일 종가", "투자 알고리즘",
+            "브리핑", "바이오스냅", "공시모음", "e공시", "e종목", "더밸류", "데일리인베스트", "IB토마토", "인포스탁",
+            "버핏 연구소", "리얼스탁", "한경유레카", "헬로스톡", "로보인베스팅", "골든클럽", "투자원정대", "오늘의 IR", "주요 공시", "IR Page",
+            "스포츠", "법률신문", "조세회계", "표창", "훈장","기념식", "후원", "선임", "광고",
+            "포럼", "증여", "상속", "수요예측", "문화대상", "브랜드평", "상장폐지", "로펌", "횡령", "VC 하우스", "주식쇼", "데이터랩",
+            "오류안내", "후속주", "로또", "평판지수", "브랜드평판", "지금이뉴스", "사외이사", "별세", "저PER", "사람인",
+            "사업자등록번호", "3파전", "엔지니어상", "장관 표창", "내달 퇴임", "소집공고", "지분 매각", "주식등의 대량보유자", "who is?",
+            "개인정보 항목", "면접 후기", "채용", "부시장", "민원처리반", "임금 체불", "총동문회", "점포거래소", "투자 핫플레이스",
+            "[상보]", "유료서비스", "marketin", "프리미엄", "simplywall", "AI리포터", "DealSite", "지속가능경영보고서"
+        ]
+        
+        self.BODY_BLACKLIST = self.TITLE_BLACKLIST.copy()
 
 
 class RegexCache:
