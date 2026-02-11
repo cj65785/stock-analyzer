@@ -295,7 +295,10 @@ with tab2:
     else:
         # 결과 표시
         for result in results:
-            created_at = datetime.strptime(result['created_at'], '%Y-%m-%d %H:%M:%S')
+            # PostgreSQL은 datetime 객체를 직접 반환
+            created_at = result['created_at']
+            if isinstance(created_at, str):
+                created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
             date_str = created_at.strftime('%Y-%m-%d %H:%M')
             
             with st.expander(f"📌 {result['company_name']} - {date_str}"):
@@ -372,5 +375,6 @@ with st.sidebar:
     st.markdown("---")
 
     st.caption("Made with ❤️ by Streamlit")
+
 
 
