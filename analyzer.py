@@ -3,9 +3,9 @@ import os
 import re
 import asyncio
 import aiohttp
+import OpenDartReader
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple, Optional
-from OpenDartReader import OpenDartReader
 from bs4 import BeautifulSoup
 
 class Config:
@@ -251,3 +251,4 @@ async def run_news_pipeline(company_name: str, config: Config, regex_cache: Rege
     unique.sort(key=lambda x: x['pub_date'], reverse=True)
     
     return unique, len(unique)
+
