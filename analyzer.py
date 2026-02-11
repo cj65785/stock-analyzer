@@ -5,7 +5,7 @@ import asyncio
 import aiohttp
 from datetime import datetime, timedelta
 from typing import List, Dict, Tuple, Optional
-import OpenDartReader
+from OpenDartReader import OpenDartReader
 from bs4 import BeautifulSoup
 
 class Config:
@@ -30,7 +30,7 @@ class RegexCache:
 class DartProcessor:
     """DART 보고서 처리 클래스"""
     def __init__(self, api_key: str):
-        self.dart = OpenDartReader.OpenDartReader(api_key)
+        self.dart = OpenDartReader(api_key)
         self.cache_dir = "dart_cache"
         os.makedirs(self.cache_dir, exist_ok=True)
     
