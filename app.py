@@ -54,7 +54,12 @@ openai_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 @st.cache_resource
 def load_companies():
     try:
-        df = pd.read_csv('krx_stocks.csv', encoding='utf-8')
+        # cp949 인코딩 시도
+        try:
+            df = pd.read_csv('krx_stocks.csv', encoding='cp949')
+        except:
+            df = pd.read_csv('krx_stocks.csv', encoding='utf-8')
+        
         # 종목코드 매핑 생성 (종목명 -> 종목코드)
         code_map = dict(zip(df['종목명'], df['종목코드']))
         companies = df['종목명'].dropna().astype(str).str.strip().tolist()
