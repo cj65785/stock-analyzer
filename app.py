@@ -50,17 +50,20 @@ def get_config():
 config = get_config()
 openai_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
 
-# 상장사 목록 로드
+# 상장사 목록 로드 (종목코드 포함)
 @st.cache_resource
 def load_companies():
     try:
         df = pd.read_csv('krx_stocks.csv', encoding='utf-8')
-        companies = df.iloc[:, 0].dropna().astype(str).str.strip().tolist()
-        return companies, RegexCache(companies)
-    except:
-        return [], None
+        # 종목코드 매핑 생성 (종목명 -> 종목코드)
+        code_map = dict(zip(df['종목명'], df['종목코드']))
+        companies = df['종목명'].dropna().astype(str).str.strip().tolist()
+        return companies, RegexCache(companies), code_map
+    except Exception as e:
+        st.error(f"CSV 로드 오류: {e}")
+        return [], None, {}
 
-ALL_COMPANIES, REGEX_CACHE = load_companies()
+ALL_COMPANIES, REGEX_CACHE, CODE_MAP = load_companies()
 
 # GPT 분석 함수
 async def analyze_news_with_gpt(company_name: str, articles: list) -> str:
@@ -157,14 +160,14 @@ async def analyze_dart_with_gpt(company_name: str, report_nm: str, dart_text: st
     except Exception as e:
         return f"GPT 오류: {e}"
 
-# 단일 종목 분석 함수
-async def analyze_company(company_name: str, progress_callback=None):
-    # 1. DART 분석
+# 단일 종목 분석 함수 (종목코드 추가)
+async def analyze_company(company_name: str, stock_code: str = None, progress_callback=None):
+    # 1. DART 분석 (종목코드 사용)
     if progress_callback:
         progress_callback(f"📊 {company_name} DART 분석 중...")
     
     dart_processor = DartProcessor(config.DART_API_KEY)
-    report_nm, dart_text, dart_error = dart_processor.process(company_name)
+    report_nm, dart_text, dart_error = dart_processor.process(company_name, stock_code)
     
     if progress_callback:
         progress_callback(f"🤖 {company_name} DART GPT 분석 중...")
@@ -206,7 +209,7 @@ async def analyze_company(company_name: str, progress_callback=None):
 st.title("📊 종목 분석 게시판")
 st.markdown("---")
 
-# 탭 생성 (3개로 확장)
+# 탭 생성 (3개)
 tab1, tab2, tab3 = st.tabs(["🚀 새 분석", "📋 전체 결과", "⭐ 즐겨찾기"])
 
 # ===== 탭 1: 새 분석 =====
@@ -236,9 +239,6 @@ with tab1:
             companies_list = [c.strip() for c in companies_input.split('\n') if c.strip()]
             st.session_state.pending_companies = companies_list.copy()
             
-            # 이미 분석된 종목 확인
-            analyzed = db.get_analyzed_companies()
-            
             st.success(f"✅ 총 {len(companies_list)}개 종목 분석 시작")
             
             # 프로그레스 바
@@ -252,11 +252,16 @@ with tab1:
             for idx, company in enumerate(companies_list):
                 status_text.text(f"[{idx+1}/{len(companies_list)}] {company} 분석 중...")
                 
+                # 종목코드 찾기
+                stock_code = CODE_MAP.get(company)
+                if not stock_code:
+                    st.warning(f"⚠️ {company}: 종목코드를 찾을 수 없습니다. 종목명으로 시도합니다.")
+                
                 def update_status(msg):
                     status_text.text(f"[{idx+1}/{len(companies_list)}] {msg}")
                 
                 try:
-                    result = asyncio.run(analyze_company(company, update_status))
+                    result = asyncio.run(analyze_company(company, stock_code, update_status))
                     st.success(f"✅ {company} 완료")
                     processed.append(company)
                     
