@@ -233,6 +233,7 @@ with tab1:
             companies_list = [c.strip() for c in companies_input.split('\n') if c.strip()]
             
             # 종목명 검증
+            # 종목명 검증 (경고만, 계속 진행)
             if ALL_COMPANIES:
                 invalid = []
                 for company in companies_list:
@@ -240,8 +241,7 @@ with tab1:
                         invalid.append(company)
                 
                 if invalid:
-                    st.error(f"⚠️ 다음 종목을 찾을 수 없습니다: {', '.join(invalid)}")
-                    st.stop()
+                    st.warning(f"⚠️ 다음 종목이 목록에 없습니다 (분석은 진행됩니다): {', '.join(invalid)}")
             
             st.success(f"✅ 총 {len(companies_list)}개 종목 분석 시작")
             
@@ -372,4 +372,5 @@ with st.sidebar:
     st.markdown("---")
 
     st.caption("Made with ❤️ by Streamlit")
+
 
