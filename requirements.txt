@@ -1,8 +1,8 @@
-streamlit==1.31.0
-pandas==2.2.3
-aiohttp==3.9.1
-beautifulsoup4==4.12.2
-openai==1.12.0
-OpenDartReader==0.2.0
-requests==2.31.0
-lxml==5.1.0
+streamlit
+pandas
+aiohttp
+beautifulsoup4
+openai
+OpenDartReader
+requests
+lxml==5.3.0
