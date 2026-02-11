@@ -31,7 +31,8 @@ st.markdown("""
 # 데이터베이스 초기화
 @st.cache_resource
 def get_database():
-    return Database()
+    database_url = st.secrets.get("DATABASE_URL")
+    return Database(database_url)
 
 db = get_database()
 
@@ -371,3 +372,4 @@ with st.sidebar:
     st.markdown("---")
 
     st.caption("Made with ❤️ by Streamlit")
+
