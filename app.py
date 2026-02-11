@@ -300,10 +300,25 @@ with tab2:
             with st.expander(f"📌 {result['company_name']} - {date_str}"):
                 # 삭제 버튼
                 col_del1, col_del2 = st.columns([5, 1])
+                # 삭제 버튼 부분 전체를 이렇게 교체:
                 with col_del2:
-                    if st.button("🗑️ 삭제", key=f"del_{result['id']}"):
-                        db.delete_result(result['id'])
-                        st.rerun()
+                    delete_key = f"delete_confirm_{result['id']}"
+                    if delete_key not in st.session_state:
+                        st.session_state[delete_key] = False
+                    
+                    if not st.session_state[delete_key]:
+                        if st.button("🗑️ 삭제", key=f"del_{result['id']}"):
+                            st.session_state[delete_key] = True
+                    else:
+                        col_confirm1, col_confirm2 = st.columns(2)
+                        with col_confirm1:
+                            if st.button("✅ 확인", key=f"confirm_{result['id']}"):
+                                db.delete_result(result['id'])
+                                del st.session_state[delete_key]
+                                st.success("삭제됨")
+                        with col_confirm2:
+                            if st.button("❌ 취소", key=f"cancel_{result['id']}"):
+                                st.session_state[delete_key] = False
                 
                 # DART 결과
                 st.markdown('<div class="section-header">📊 DART 보고서 모멘텀</div>', unsafe_allow_html=True)
@@ -354,4 +369,5 @@ with st.sidebar:
     """)
     
     st.markdown("---")
+
     st.caption("Made with ❤️ by Streamlit")
