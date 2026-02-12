@@ -380,7 +380,7 @@ with tab2:
             
             with c_check:
                 # 체크박스 (Key를 유니크하게 설정하여 상태 관리)
-                st.checkbox("", key=f"del_{result['id']}")
+                st.checkbox("삭제 선택", key=f"del_{result['id']}", label_visibility="collapsed")
                 
             with c_content:
                 # 기존 Expander 내용
@@ -486,6 +486,7 @@ with tab3:
             file_name=f"bookmarked_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
 
 
 
