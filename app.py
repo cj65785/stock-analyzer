@@ -218,7 +218,7 @@ tab1, tab2, tab3 = st.tabs(["🚀 새 분석", "📋 전체 결과", "⭐ 즐겨
 
 # ===== 탭 1: 새 분석 =====
 with tab1:
-    st.header("🚀 새 분석 시작 (자동 이어하기 모드)")
+    st.markdown("🚀 New Analysis")
     
     # [수정 1] 처리 상태를 관리할 플래그 초기화
     if 'is_processing' not in st.session_state:
@@ -323,7 +323,7 @@ with tab1:
 
 # ===== 탭 2: 전체 결과 =====
 with tab2:
-    st.header("📋 전체 결과 (관리 모드)")
+    st.markdown("📋 Result")
     
     # 상단 컨트롤 패널 (검색 & 삭제 버튼)
     col_search, col_action, col_count = st.columns([3, 2, 1])
@@ -432,7 +432,7 @@ with tab2:
 
 # ===== 탭 3: 즐겨찾기 =====
 with tab3:
-    st.header("⭐ 즐겨찾기")
+    st.markdown("⭐ Favorites")
     
     # 즐겨찾기 결과 조회
     bookmarked_results = db.get_bookmarked_results()
@@ -486,6 +486,7 @@ with tab3:
             file_name=f"bookmarked_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
 
 
 
