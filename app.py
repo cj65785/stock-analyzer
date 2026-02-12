@@ -6,6 +6,8 @@ import time
 from datetime import datetime
 from openai import AsyncOpenAI
 from io import BytesIO
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, module='pandas')
 from database import Database
 from analyzer import (
     Config, RegexCache, DartProcessor, 
@@ -453,5 +455,6 @@ with tab3:
             file_name=f"bookmarked_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
 
 
