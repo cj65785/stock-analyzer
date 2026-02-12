@@ -222,85 +222,106 @@ tab1, tab2, tab3 = st.tabs(["🚀 새 분석", "📋 전체 결과", "⭐ 즐겨
 with tab1:
     st.header("🚀 새 분석 시작 (자동 이어하기 모드)")
     
-    # 세션 상태 초기화
-    if 'pending_companies' not in st.session_state:
-        st.session_state.pending_companies = []
+    # [수정 1] 처리 상태를 관리할 플래그 초기화
     if 'is_processing' not in st.session_state:
         st.session_state.is_processing = False
     
-    # 입력창
+    # [기존 유지] 입력창 상태 관리
+    if 'pending_companies' not in st.session_state:
+        st.session_state.pending_companies = []
+    
+    # [기존 유지] 입력 UI
     companies_input = st.text_area(
         "종목명 입력 (줄바꿈으로 구분)",
-        value='\n'.join(st.session_state.pending_companies) if st.session_state.pending_companies else "",
+        value='\n'.join(st.session_state.pending_companies) if st.session_state.pending_companies and not st.session_state.is_processing else "",
         placeholder="삼성전자\nSK하이닉스\n케어젠",
         height=150,
-        key="companies_input"
+        key="companies_input",
+        disabled=st.session_state.is_processing # 처리 중엔 입력 막기
     )
     
-    # [버튼] 클릭 시 리스트 저장하고 처리 상태(True)로 변경 후 리로드
-    if st.button("🔍 분석 시작", type="primary", use_container_width=True):
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        # [수정 2] 버튼 로직 변경
+        # 버튼을 누르면 '처리 중' 상태로 바꾸고 즉시 리로드합니다.
+        analyze_button = st.button("🔍 분석 시작", type="primary", use_container_width=True, disabled=st.session_state.is_processing)
+    
+    # 버튼 클릭 시 초기 세팅
+    if analyze_button:
         if not companies_input.strip():
             st.warning("⚠️ 종목명을 입력해주세요.")
         else:
-            # 리스트 파싱해서 세션에 저장
+            # 입력된 목록을 리스트로 변환하여 저장
             companies_list = [c.strip() for c in companies_input.split('\n') if c.strip()]
             st.session_state.pending_companies = companies_list
             st.session_state.is_processing = True # 처리 시작 플래그 ON
-            st.rerun() # 즉시 재실행하여 아래 로직 진입
+            st.rerun() # 로직 시작을 위해 리로드
 
-    # [자동 처리 로직] 처리 상태가 True이고 남은 종목이 있으면 실행
+    # [수정 3] 자동 배치 처리 로직 (리로드 될 때마다 실행됨)
     if st.session_state.is_processing and st.session_state.pending_companies:
         
         # 1. 배치 설정 (한 번에 5개씩)
         BATCH_SIZE = 5
         total_remaining = len(st.session_state.pending_companies)
-        current_batch = st.session_state.pending_companies[:BATCH_SIZE] # 앞에서 5개 자름
+        
+        # 남은 것 중 앞에서 5개만 가져옴
+        current_batch = st.session_state.pending_companies[:BATCH_SIZE]
         
         st.info(f"🔄 자동 처리 중... (남은 종목: {total_remaining}개 / 이번 배치: {len(current_batch)}개)")
         
         progress_bar = st.progress(0)
         status_text = st.empty()
         
-        # 2. 배치 분석 루프
         processed_count = 0
+        
+        # 2. 배치 루프 (5개만 실행)
         for idx, company in enumerate(current_batch):
             status_text.markdown(f"**[{idx+1}/{len(current_batch)}] 🔍 {company} 분석 중...**")
             
             # 종목코드 매핑
             stock_code = CODE_MAP.get(company)
+            if not stock_code:
+                st.warning(f"⚠️ {company}: 종목코드를 찾을 수 없습니다. 종목명으로 시도합니다.")
             
-            # 상태 업데이트 콜백 함수
+            # 콜백 함수 정의
             def update_status(msg):
                 status_text.text(f"[{idx+1}/{len(current_batch)}] {msg}")
             
             try:
-                # 기존 분석 함수 실행
+                # [핵심] 기존의 비동기 분석 함수 호출
+                # 마스터님 코드의 analyze_company 함수를 그대로 사용
                 asyncio.run(analyze_company(company, stock_code, update_status))
                 processed_count += 1
                 
             except Exception as e:
                 st.error(f"❌ {company} 오류: {e}")
-                # 실패해도 일단 리스트에선 넘어가야 무한루프 안 돔
+                # 실패해도 다음 루프로 진행
             
             progress_bar.progress((idx + 1) / len(current_batch))
         
-        # 3. 완료된 종목 제거 (Queue Pop)
-        # 방금 처리한 BATCH_SIZE만큼 리스트 앞에서 제거
+        # 3. 처리 완료된 목록 제거 (Queue Pop)
+        # 방금 처리한 개수만큼 리스트 앞에서 잘라냄
         st.session_state.pending_companies = st.session_state.pending_companies[BATCH_SIZE:]
         
-        # 4. 다음 단계 결정
+        # 4. 다음 작업 결정
         if st.session_state.pending_companies:
-            # 아직 남았으면 -> 재실행 (Rerun)
+            # 아직 남았으면 -> 잠시 대기 후 리로드 (메모리 초기화)
             status_text.text(f"✅ {processed_count}개 완료! 메모리 정리를 위해 1초 뒤 이어합니다...")
-            time.sleep(1)
-            st.rerun()
+            time.sleep(1) 
+            st.rerun() 
         else:
             # 다 끝났으면 -> 종료 처리
             st.session_state.is_processing = False
+            st.session_state.pending_companies = [] # 목록 비우기
+            
             status_text.text("✨ 모든 분석 완료!")
             progress_bar.progress(1.0)
             st.balloons()
-            st.success("모든 작업이 끝났습니다! '전체 결과' 탭을 확인하세요.")
+            st.success("✅ 모든 작업이 끝났습니다! '전체 결과' 탭을 확인하세요.")
+            
+            # 완료 후 입력창 초기화를 위한 리로드 버튼 (선택사항)
+            if st.button("새로 시작하기"):
+                st.rerun()
 
 # ===== 탭 2: 전체 결과 =====
 with tab2:
@@ -432,4 +453,5 @@ with tab3:
             file_name=f"bookmarked_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
 
