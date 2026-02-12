@@ -370,82 +370,86 @@ class DartProcessor:
         except Exception as e:
             return None
 
-    def process(self, company_name: str, stock_code: str = None) -> Tuple[str, str, str]:
-        """종목 분석 (종목코드 지원)"""
-        code = self.find_listed_corp_code(company_name, stock_code)
-        if not code:
-            return "", "", "DART에 등록되지 않은 기업명입니다."
-            
+def _get_latest_report_code(self, corp_code):
+        """
+        가장 최신의 정기공시(사업/반기/분기)를 찾아 보고서 번호와 제목을 반환합니다.
+        (단순 사업보고서만 찾으면 1년 전 데이터를 볼 위험이 있어 수정함)
+        """
         try:
-            start_date = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime("%Y-%m-%d")
-            reports = self.dart.list(code, start=start_date, kind='A', final=False)
+            # 1년치 공시 목록 조회
+            end_dt = datetime.datetime.now().strftime('%Y%m%d')
+            start_dt = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y%m%d')
             
-            if reports is None or (isinstance(reports, pd.DataFrame) and reports.empty):
-                reports = self.dart.list(code, start=start_date, final=False)
-
-            if reports is None or (isinstance(reports, pd.DataFrame) and reports.empty):
-                return "", "", "최근 1년 내 조회된 공시가 없습니다."
-                 
-        except Exception as e:
-            return "", "", f"보고서 목록 검색 오류: {e}"
-        
-        target_pattern = '사업보고서|분기보고서|반기보고서'
-        filtered = reports[reports['report_nm'].str.contains(target_pattern, na=False)].copy()
-        
-        if filtered.empty:
-            return "", "", "최근 1년 내 정기 보고서(사업/분기/반기) 없음"
-
-        filtered.sort_values(by='rcept_dt', ascending=False, inplace=True)
-        latest = filtered.iloc[0]
-        
-        rcp_no = latest.get('rcept_no')
-        report_nm = latest.get('report_nm')
-
-        try:
-            sub_docs = self.dart.sub_docs(rcp_no)
-        except Exception as e:
-            return report_nm, "", f"하위문서 목록 조회 실패: {e}"
+            # 전체 공시 목록 가져오기
+            reports = self.dart.list(corp_code=corp_code, start=start_dt, end=end_dt, final=False)
             
-        if sub_docs is None or sub_docs.empty:
-            return report_nm, "", "하위문서(목차)가 비어있음"
-        
-        business_docs = []
-        in_business = False
-        
-        for idx, row in sub_docs.iterrows():
-            title = row.get('title', '').strip()
-            url = row.get('url', '')
+            if reports is None or reports.empty:
+                return None, None
             
-            if '사업의 내용' in title:
-                in_business = True
-                continue
+            # 보고서명에 '사업보고서', '분기보고서', '반기보고서'가 포함된 것만 필터링
+            target_reports = reports[reports['report_nm'].str.contains('사업보고서|분기보고서|반기보고서', regex=True)]
             
-            if '재무에 관한 사항' in title:
-                break
+            if target_reports.empty:
+                return None, None
                 
-            if in_business and url:
-                business_docs.append({'title': title, 'url': url})
-        
-        if not business_docs:
-            return report_nm, "", "'사업의 내용' 섹션 없음"
+            # 접수일자(rcept_dt) 기준 내림차순 정렬하여 가장 최신 것 선택
+            latest = target_reports.sort_values(by='rcept_dt', ascending=False).iloc[0]
+            
+            return latest['rcept_no'], latest['report_nm']
+            
+        except Exception as e:
+            print(f"DART 목록 조회 실패: {e}")
+            return None, None
 
-        full_text = []
-        for doc in business_docs:
-            try:
-                resp = requests.get(doc['url'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
-                if resp.status_code == 200:
-                    soup = BeautifulSoup(resp.text, 'html.parser')
-                    text = self.clean_text(soup.get_text(separator='\n'))
-                    if len(text) > 100:
-                        full_text.append(f"[{doc['title']}]\n{text}")
-            except:
-                pass
-        
-        result = '\n\n'.join(full_text)
-        if not result:
-            return report_nm, "", "본문 텍스트 추출 실패"
-             
-        return report_nm, result, ""
+    def _extract_core_content(self, text):
+        """
+        보고서 전체가 아니라 'II. 사업의 내용' 등 핵심 파트만 추출합니다.
+        (GPT 토큰 절약 및 정확도 향상)
+        """
+        try:
+            # 정규식으로 '사업의 내용' 섹션 추출 시도
+            # 패턴: "II. 사업의 내용" ~ "III. 재무" 사이
+            pattern = r'(II\.?|2\.)\s*사업의\s*내용.*?(III\.?|3\.)\s*재무'
+            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            
+            if match:
+                # 찾았으면 해당 부분만 반환
+                return match.group(0).strip()
+            else:
+                # 못 찾았으면 앞부분 30,000자만 반환 (너무 길면 잘림)
+                return text[:30000]
+        except:
+            return text[:30000]
+
+    def process(self, company_name: str, stock_code: str = None) -> Tuple[str, str, str]:
+        try:
+            # 종목코드가 없으면 DART에서 찾기
+            if not stock_code:
+                code = self.dart.find_corp_code(company_name)
+            else:
+                code = stock_code
+                
+            if not code:
+                return None, None, "DART 기업코드를 찾을 수 없습니다."
+
+            # [수정] 최신 보고서(분기/반기 포함) 찾기
+            rcept_no, report_nm = self._get_latest_report_code(code)
+            
+            if not rcept_no:
+                return None, None, "최근 1년 내 정기공시(사업/반기/분기)가 없습니다."
+
+            # 보고서 원문 다운로드
+            xml_text = self.dart.document(rcept_no)
+            if not xml_text:
+                return report_nm, None, "보고서 원문 데이터가 비어있습니다."
+
+            # [수정] 핵심 내용만 스마트하게 추출
+            dart_text = self._extract_core_content(xml_text)
+            
+            return report_nm, dart_text, ""
+            
+        except Exception as e:
+            return None, None, f"DART 처리 중 오류: {str(e)}"
 
 
 async def run_news_pipeline(target: str, config: Config, regex_cache: RegexCache) -> Tuple[List[Dict], int]:
@@ -485,3 +489,4 @@ async def run_news_pipeline(target: str, config: Config, regex_cache: RegexCache
     
     valid.sort(key=lambda x: x['pub_date'], reverse=True)
     return valid, len(valid)
+
