@@ -327,66 +327,101 @@ with tab1:
 
 # ===== 탭 2: 전체 결과 =====
 with tab2:
-    st.header("📋 전체 결과")
+    st.header("📋 전체 결과 (관리 모드)")
     
-    # 검색 & 통계
-    col1, col2, col3 = st.columns([3, 1, 1])
-    with col1:
+    # 상단 컨트롤 패널 (검색 & 삭제 버튼)
+    col_search, col_action, col_count = st.columns([3, 2, 1])
+    
+    with col_search:
         search_keyword = st.text_input("🔍 검색", placeholder="종목명 입력", key="search_all")
-    with col2:
-        st.write("")  # 간격
-    with col3:
+    
+    with col_count:
         total_count = db.get_count()
         st.metric("총 분석 수", f"{total_count}개")
-    
-    # 결과 조회
+
+    # 결과 데이터 가져오기
     if search_keyword:
         results = db.search_results(search_keyword)
     else:
-        results = db.get_all_results(limit=100)
+        results = db.get_all_results(limit=100) # 최신 100개만
     
+    # ---------------- [삭제 로직] ----------------
+    with col_action:
+        st.write("") # 줄맞춤용 공백
+        if st.button("🗑️ 선택된 항목 삭제", type="primary"):
+            deleted_count = 0
+            # 현재 화면에 있는 결과들 중 체크된 것 확인
+            for result in results:
+                # 체크박스 키: del_{id}
+                if st.session_state.get(f"del_{result['id']}"):
+                    db.delete_result(result['id'])
+                    deleted_count += 1
+            
+            if deleted_count > 0:
+                st.success(f"✅ {deleted_count}개 항목을 삭제했습니다.")
+                time.sleep(1)
+                st.rerun() # 새로고침
+            else:
+                st.warning("⚠️ 삭제할 항목을 선택해주세요.")
+    # ---------------------------------------------
+
+    st.markdown("---")
+
     if not results:
         st.info("📝 분석 결과가 없습니다. '새 분석' 탭에서 종목을 분석해보세요!")
     else:
-        # 결과 표시
+        # 결과 리스트 출력 (체크박스 + 내용)
         for result in results:
             created_at = result['created_at']
             if isinstance(created_at, str):
                 created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
             date_str = created_at.strftime('%Y-%m-%d %H:%M')
             
-            # 북마크 상태
             bookmark_icon = "⭐" if result.get('is_bookmarked') else "☆"
             
-            with st.expander(f"📌 {result['company_name']} - {date_str}"):
-                # 북마크 버튼
-                col_bookmark, col_space = st.columns([1, 5])
-                with col_bookmark:
-                    if st.button(f"{bookmark_icon} 즐겨찾기", key=f"bookmark_{result['id']}"):
-                        db.toggle_bookmark(result['id'])
+            # [레이아웃] 왼쪽: 체크박스(1) / 오른쪽: 확장패널(20) 비율
+            c_check, c_content = st.columns([1, 20])
+            
+            with c_check:
+                # 체크박스 (Key를 유니크하게 설정하여 상태 관리)
+                st.checkbox("", key=f"del_{result['id']}")
+                
+            with c_content:
+                # 기존 Expander 내용
+                with st.expander(f"{bookmark_icon} {result['company_name']} - {date_str}"):
+                    
+                    # 북마크 버튼
+                    col_bookmark, col_space = st.columns([1, 5])
+                    with col_bookmark:
+                        if st.button(f"{bookmark_icon} 즐겨찾기", key=f"bookmark_{result['id']}"):
+                            db.toggle_bookmark(result['id'])
+                            st.rerun()
+                    
+                    # DART 결과
+                    st.markdown('<div class="section-header">📊 DART 보고서 모멘텀</div>', unsafe_allow_html=True)
+                    if result['dart_error']:
+                        st.warning(f"⚠️ {result['dart_error']}")
+                    else:
+                        st.write(f"**보고서:** {result['dart_report']}")
+                        st.text(result['dart_result'])
+                    
+                    st.markdown("---")
+                    
+                    # 뉴스 결과
+                    st.markdown('<div class="section-header">📰 뉴스 모멘텀 (최근 6개월)</div>', unsafe_allow_html=True)
+                    st.write(f"**수집 기사:** {result['news_count']}건")
+                    st.text(result['news_result'])
+                    
+                    # 개별 삭제 버튼 (혹시 몰라 내부에 하나 더 둠)
+                    if st.button("❌ 이 결과만 삭제", key=f"btn_del_one_{result['id']}"):
+                        db.delete_result(result['id'])
                         st.rerun()
-                
-                # DART 결과
-                st.markdown('<div class="section-header">📊 DART 보고서 모멘텀</div>', unsafe_allow_html=True)
-                if result['dart_error']:
-                    st.warning(f"⚠️ {result['dart_error']}")
-                else:
-                    st.write(f"**보고서:** {result['dart_report']}")
-                    st.text(result['dart_result'])
-                
-                st.markdown("---")
-                
-                # 뉴스 결과
-                st.markdown('<div class="section-header">📰 뉴스 모멘텀 (최근 6개월)</div>', unsafe_allow_html=True)
-                st.write(f"**수집 기사:** {result['news_count']}건")
-                st.text(result['news_result'])
     
-    # 엑셀 다운로드
+    # 엑셀 다운로드 (목록이 있을 때만)
     if results:
         st.markdown("---")
         df = db.to_dataframe()
         
-        # Excel 파일로 변환
         output = BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name='분석결과')
@@ -455,6 +490,7 @@ with tab3:
             file_name=f"bookmarked_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
 
 
 
