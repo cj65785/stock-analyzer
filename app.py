@@ -16,7 +16,6 @@ from analyzer import (
 
 # 페이지 설정
 st.set_page_config(
-    page_title="📊 종목 분석 게시판",
     page_icon="📊",
     layout="wide"
 )
@@ -213,9 +212,6 @@ async def analyze_company(company_name: str, stock_code: str = None, progress_ca
     }
 
 # ==================== UI ====================
-
-st.title("📊 종목 분석 게시판")
-st.markdown("---")
 
 # 탭 생성 (3개)
 tab1, tab2, tab3 = st.tabs(["🚀 새 분석", "📋 전체 결과", "⭐ 즐겨찾기"])
@@ -490,6 +486,7 @@ with tab3:
             file_name=f"bookmarked_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
 
 
 
