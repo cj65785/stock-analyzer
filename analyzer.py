@@ -209,7 +209,7 @@ async def extract_body(url: str, client: HTTPClient) -> str:
             body_elem = soup.find('body') or soup
         
         for tag in body_elem.find_all(['script', 'style', 'header', 'footer',
-                                      'nav', 'aside', 'form', 'iframe', 'button']):
+                                     'nav', 'aside', 'form', 'iframe', 'button']):
             tag.decompose()
         
         text = body_elem.get_text(separator='\n')
@@ -370,87 +370,87 @@ class DartProcessor:
         except Exception as e:
             return None
 
-        def _get_latest_report_code(self, corp_code):
-                """
-                가장 최신의 정기공시(사업/반기/분기)를 찾아 보고서 번호와 제목을 반환합니다.
-                (단순 사업보고서만 찾으면 1년 전 데이터를 볼 위험이 있어 수정함)
-                """
-                try:
-                    # 1년치 공시 목록 조회
-                    end_dt = datetime.datetime.now().strftime('%Y%m%d')
-                    start_dt = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y%m%d')
-                    
-                    # 전체 공시 목록 가져오기
-                    reports = self.dart.list(corp_code=corp_code, start=start_dt, end=end_dt, final=False)
-                    
-                    if reports is None or reports.empty:
-                        return None, None
-                    
-                    # 보고서명에 '사업보고서', '분기보고서', '반기보고서'가 포함된 것만 필터링
-                    target_reports = reports[reports['report_nm'].str.contains('사업보고서|분기보고서|반기보고서', regex=True)]
-                    
-                    if target_reports.empty:
-                        return None, None
-                        
-                    # 접수일자(rcept_dt) 기준 내림차순 정렬하여 가장 최신 것 선택
-                    latest = target_reports.sort_values(by='rcept_dt', ascending=False).iloc[0]
-                    
-                    return latest['rcept_no'], latest['report_nm']
-                    
-                except Exception as e:
-                    print(f"DART 목록 조회 실패: {e}")
-                    return None, None
-    
-        def _extract_core_content(self, text):
-            """
-            보고서 전체가 아니라 'II. 사업의 내용' 등 핵심 파트만 추출합니다.
-            (GPT 토큰 절약 및 정확도 향상)
-            """
-            try:
-                # 정규식으로 '사업의 내용' 섹션 추출 시도
-                # 패턴: "II. 사업의 내용" ~ "III. 재무" 사이
-                pattern = r'(II\.?|2\.)\s*사업의\s*내용.*?(III\.?|3\.)\s*재무'
-                match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+    def _get_latest_report_code(self, corp_code):
+        """
+        가장 최신의 정기공시(사업/반기/분기)를 찾아 보고서 번호와 제목을 반환합니다.
+        (단순 사업보고서만 찾으면 1년 전 데이터를 볼 위험이 있어 수정함)
+        """
+        try:
+            # 1년치 공시 목록 조회
+            end_dt = datetime.datetime.now().strftime('%Y%m%d')
+            start_dt = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y%m%d')
+            
+            # 전체 공시 목록 가져오기
+            reports = self.dart.list(corp_code=corp_code, start=start_dt, end=end_dt, final=False)
+            
+            if reports is None or reports.empty:
+                return None, None
+            
+            # 보고서명에 '사업보고서', '분기보고서', '반기보고서'가 포함된 것만 필터링
+            target_reports = reports[reports['report_nm'].str.contains('사업보고서|분기보고서|반기보고서', regex=True)]
+            
+            if target_reports.empty:
+                return None, None
                 
-                if match:
-                    # 찾았으면 해당 부분만 반환
-                    return match.group(0).strip()
-                else:
-                    # 못 찾았으면 앞부분 30,000자만 반환 (너무 길면 잘림)
-                    return text[:30000]
-            except:
+            # 접수일자(rcept_dt) 기준 내림차순 정렬하여 가장 최신 것 선택
+            latest = target_reports.sort_values(by='rcept_dt', ascending=False).iloc[0]
+            
+            return latest['rcept_no'], latest['report_nm']
+            
+        except Exception as e:
+            print(f"DART 목록 조회 실패: {e}")
+            return None, None
+
+    def _extract_core_content(self, text):
+        """
+        보고서 전체가 아니라 'II. 사업의 내용' 등 핵심 파트만 추출합니다.
+        (GPT 토큰 절약 및 정확도 향상)
+        """
+        try:
+            # 정규식으로 '사업의 내용' 섹션 추출 시도
+            # 패턴: "II. 사업의 내용" ~ "III. 재무" 사이
+            pattern = r'(II\.?|2\.)\s*사업의\s*내용.*?(III\.?|3\.)\s*재무'
+            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            
+            if match:
+                # 찾았으면 해당 부분만 반환
+                return match.group(0).strip()
+            else:
+                # 못 찾았으면 앞부분 30,000자만 반환 (너무 길면 잘림)
                 return text[:30000]
-    
-        def process(self, company_name: str, stock_code: str = None) -> Tuple[str, str, str]:
-            try:
-                # 종목코드가 없으면 DART에서 찾기
-                if not stock_code:
-                    code = self.dart.find_corp_code(company_name)
-                else:
-                    code = stock_code
-                    
-                if not code:
-                    return None, None, "DART 기업코드를 찾을 수 없습니다."
-    
-                # [수정] 최신 보고서(분기/반기 포함) 찾기
-                rcept_no, report_nm = self._get_latest_report_code(code)
+        except:
+            return text[:30000]
+
+    def process(self, company_name: str, stock_code: str = None) -> Tuple[str, str, str]:
+        try:
+            # 종목코드가 없으면 DART에서 찾기
+            if not stock_code:
+                code = self.dart.find_corp_code(company_name)
+            else:
+                code = stock_code
                 
-                if not rcept_no:
-                    return None, None, "최근 1년 내 정기공시(사업/반기/분기)가 없습니다."
-    
-                # 보고서 원문 다운로드
-                xml_text = self.dart.document(rcept_no)
-                if not xml_text:
-                    return report_nm, None, "보고서 원문 데이터가 비어있습니다."
-    
-                # [수정] 핵심 내용만 스마트하게 추출
-                dart_text = self._extract_core_content(xml_text)
-                
-                return report_nm, dart_text, ""
-                
-            except Exception as e:
-                return None, None, f"DART 처리 중 오류: {str(e)}"
-    
+            if not code:
+                return None, None, "DART 기업코드를 찾을 수 없습니다."
+
+            # [수정] 최신 보고서(분기/반기 포함) 찾기
+            rcept_no, report_nm = self._get_latest_report_code(code)
+            
+            if not rcept_no:
+                return None, None, "최근 1년 내 정기공시(사업/반기/분기)가 없습니다."
+
+            # 보고서 원문 다운로드
+            xml_text = self.dart.document(rcept_no)
+            if not xml_text:
+                return report_nm, None, "보고서 원문 데이터가 비어있습니다."
+
+            # [수정] 핵심 내용만 스마트하게 추출
+            dart_text = self._extract_core_content(xml_text)
+            
+            return report_nm, dart_text, ""
+            
+        except Exception as e:
+            return None, None, f"DART 처리 중 오류: {str(e)}"
+
 
 async def run_news_pipeline(target: str, config: Config, regex_cache: RegexCache) -> Tuple[List[Dict], int]:
     articles = await search_naver(target, config, regex_cache)
@@ -489,6 +489,3 @@ async def run_news_pipeline(target: str, config: Config, regex_cache: RegexCache
     
     valid.sort(key=lambda x: x['pub_date'], reverse=True)
     return valid, len(valid)
-
-
-
