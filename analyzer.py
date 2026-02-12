@@ -348,8 +348,13 @@ class DartProcessor:
             
             # 1. 종목코드로 먼저 찾기 (우선)
             if stock_code:
-                clean_code = stock_code.replace('A', '').replace('a', '').strip().zfill(6)
-                matched = df[df['stock_code'] == clean_code]
+                if stock_code.startswith('A') or stock_code.startswith('a'):
+                    clean_code = stock_code[1:].strip().zfill(6)
+                else:
+                    clean_code = stock_code.strip().zfill(6)
+                
+                # 안전한 비교를 위해 astype(str) 사용
+                matched = df[df['stock_code'].astype(str).str.strip() == clean_code]
                 if not matched.empty:
                     return matched.iloc[0]['corp_code']
             
@@ -362,7 +367,7 @@ class DartProcessor:
                 return None
                 
             if 'stock_code' in candidates.columns:
-                listed = candidates[candidates['stock_code'].notnull() & (candidates['stock_code'].str.strip() != '')]
+                listed = candidates[candidates['stock_code'].notnull() & (candidates['stock_code'].astype(str).str.strip() != '')]
                 if not listed.empty:
                     return listed.iloc[0]['corp_code']
             
@@ -370,92 +375,91 @@ class DartProcessor:
         except Exception as e:
             return None
 
-    def _get_latest_report_code(self, corp_code):
-        """
-        가장 최신의 정기공시(사업/반기/분기)를 찾아 보고서 번호와 제목을 반환합니다.
-        """
-        try:
-            # 기간: 넉넉하게 1.5년 (약 550일)
-            end_dt = datetime.datetime.now().strftime('%Y%m%d')
-            start_dt = (datetime.datetime.now() - datetime.timedelta(days=550)).strftime('%Y%m%d')
-            
-            # 전체 공시 목록 가져오기
-            reports = self.dart.list(corp_code=corp_code, start=start_dt, end=end_dt, final=False)
-            
-            if reports is None or reports.empty:
-                return None, None
-            
-            # [필터링] 사업/분기/반기 보고서만 정확히 타겟팅
-            target_reports = reports[reports['report_nm'].str.contains('사업보고서|분기보고서|반기보고서', regex=True)]
-            
-            if target_reports.empty:
-                return None, None
-                
-            # 최신순 정렬
-            latest = target_reports.sort_values(by='rcept_dt', ascending=False).iloc[0]
-            
-            return latest['rcept_no'], latest['report_nm']
-            
-        except Exception as e:
-            print(f"DART 목록 조회 실패: {e}")
-            return None, None
-
-    def _extract_core_content(self, text):
-        """
-        보고서 전체가 아니라 'II. 사업의 내용' 등 핵심 파트만 추출합니다.
-        (GPT 토큰 절약 및 정확도 향상)
-        """
-        try:
-            # 정규식으로 '사업의 내용' 섹션 추출 시도
-            # 패턴: "II. 사업의 내용" ~ "III. 재무" 사이
-            pattern = r'(II\.?|2\.)\s*사업의\s*내용.*?(III\.?|3\.)\s*재무'
-            match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
-            
-            if match:
-                # 찾았으면 해당 부분만 반환
-                return match.group(0).strip()
-            else:
-                # 못 찾았으면 앞부분 30,000자만 반환 (너무 길면 잘림)
-                return text[:30000]
-        except:
-            return text[:30000]
-
-
-    # analyzer.py의 DartProcessor 클래스 내부
     def process(self, company_name: str, stock_code: str = None) -> Tuple[str, str, str]:
+        """종목 분석 (종목코드 지원)"""
+        code = self.find_listed_corp_code(company_name, stock_code)
+        if not code:
+            return "", "", "DART에 등록되지 않은 기업명입니다."
+            
         try:
-            # [핵심 수정] stock_code(거래소 코드)를 그대로 쓰면 안 되고, 
-            # find_listed_corp_code를 통해 DART 고유번호(corp_code)로 변환해야 합니다.
+            start_date = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime("%Y-%m-%d")
+            # 1순위: 사업/분기/반기 보고서 조회
+            reports = self.dart.list(code, start=start_date, kind='A', final=False)
             
-            # 1. DART 고유번호 찾기
-            code = self.find_listed_corp_code(company_name, stock_code)
-                
-            if not code:
-                # 못 찾았을 경우 이름으로 재시도 (OpenDartReader 내장 함수 사용)
-                code = self.dart.find_corp_code(company_name)
-                
-            if not code:
-                return None, None, f"DART에서 기업을 찾을 수 없습니다. (종목명: {company_name})"
+            if reports is None or (isinstance(reports, pd.DataFrame) and reports.empty):
+                # 2순위: 전체 보고서 조회
+                reports = self.dart.list(code, start=start_date, final=False)
 
-            # 2. 정기 보고서(사업/반기/분기) 검색
-            # 마스터님 말씀대로 상장사라면 반드시 있어야 정상입니다.
-            rcept_no, report_nm = self._get_latest_report_code(code)
-            
-            if not rcept_no:
-                return None, None, "최근 1.5년 내 정기공시(사업/반기/분기)가 발견되지 않았습니다."
-
-            # 3. 보고서 원문 다운로드
-            xml_text = self.dart.document(rcept_no)
-            if not xml_text:
-                return report_nm, None, "보고서 원문 데이터가 비어있습니다."
-
-            # 4. 핵심 내용 추출
-            dart_text = self._extract_core_content(xml_text)
-            
-            return report_nm, dart_text, ""
-            
+            if reports is None or (isinstance(reports, pd.DataFrame) and reports.empty):
+                return "", "", "최근 1년 내 조회된 공시가 없습니다."
+                 
         except Exception as e:
-            return None, None, f"DART 처리 중 오류: {str(e)}"
+            return "", "", f"보고서 목록 검색 오류: {e}"
+        
+        target_pattern = '사업보고서|분기보고서|반기보고서'
+        filtered = reports[reports['report_nm'].str.contains(target_pattern, na=False)].copy()
+        
+        if filtered.empty:
+            return "", "", "최근 1년 내 정기 보고서(사업/분기/반기) 없음"
+
+        filtered.sort_values(by='rcept_dt', ascending=False, inplace=True)
+        latest = filtered.iloc[0]
+        
+        rcp_no = latest.get('rcept_no')
+        report_nm = latest.get('report_nm')
+
+        try:
+            sub_docs = self.dart.sub_docs(rcp_no)
+        except Exception as e:
+            return report_nm, "", f"하위문서 목록 조회 실패: {e}"
+            
+        if sub_docs is None or sub_docs.empty:
+            return report_nm, "", "하위문서(목차)가 비어있음"
+        
+        business_docs = []
+        in_business = False
+        
+        for idx, row in sub_docs.iterrows():
+            title = row.get('title', '').strip()
+            url = row.get('url', '')
+            
+            if '사업의 내용' in title:
+                in_business = True
+                continue
+            
+            if '재무에 관한 사항' in title:
+                break
+                
+            if in_business and url:
+                business_docs.append({'title': title, 'url': url})
+        
+        if not business_docs:
+            # 사업의 내용 섹션 명시적으로 못 찾으면 '사업의 내용'이 포함된 것 찾기
+            for idx, row in sub_docs.iterrows():
+                 if '사업의 내용' in row.get('title', ''):
+                      business_docs.append({'title': row.get('title'), 'url': row.get('url')})
+
+        if not business_docs:
+             return report_nm, "", "'사업의 내용' 섹션 없음"
+
+        full_text = []
+        for doc in business_docs:
+            try:
+                resp = requests.get(doc['url'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
+                if resp.status_code == 200:
+                    soup = BeautifulSoup(resp.text, 'html.parser')
+                    text = self.clean_text(soup.get_text(separator='\n'))
+                    if len(text) > 100:
+                        full_text.append(f"[{doc['title']}]\n{text}")
+            except:
+                pass
+        
+        result = '\n\n'.join(full_text)
+        if not result:
+            return report_nm, "", "본문 텍스트 추출 실패"
+             
+        return report_nm, result, ""
+
 
 async def run_news_pipeline(target: str, config: Config, regex_cache: RegexCache) -> Tuple[List[Dict], int]:
     articles = await search_naver(target, config, regex_cache)
@@ -494,4 +498,3 @@ async def run_news_pipeline(target: str, config: Config, regex_cache: RegexCache
     
     valid.sort(key=lambda x: x['pub_date'], reverse=True)
     return valid, len(valid)
-
