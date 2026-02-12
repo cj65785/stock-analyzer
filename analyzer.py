@@ -373,12 +373,11 @@ class DartProcessor:
     def _get_latest_report_code(self, corp_code):
         """
         가장 최신의 정기공시(사업/반기/분기)를 찾아 보고서 번호와 제목을 반환합니다.
-        (단순 사업보고서만 찾으면 1년 전 데이터를 볼 위험이 있어 수정함)
         """
         try:
-            # 1년치 공시 목록 조회
+            # 기간: 넉넉하게 1.5년 (약 550일)
             end_dt = datetime.datetime.now().strftime('%Y%m%d')
-            start_dt = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y%m%d')
+            start_dt = (datetime.datetime.now() - datetime.timedelta(days=550)).strftime('%Y%m%d')
             
             # 전체 공시 목록 가져오기
             reports = self.dart.list(corp_code=corp_code, start=start_dt, end=end_dt, final=False)
@@ -386,13 +385,13 @@ class DartProcessor:
             if reports is None or reports.empty:
                 return None, None
             
-            # 보고서명에 '사업보고서', '분기보고서', '반기보고서'가 포함된 것만 필터링
+            # [필터링] 사업/분기/반기 보고서만 정확히 타겟팅
             target_reports = reports[reports['report_nm'].str.contains('사업보고서|분기보고서|반기보고서', regex=True)]
             
             if target_reports.empty:
                 return None, None
                 
-            # 접수일자(rcept_dt) 기준 내림차순 정렬하여 가장 최신 것 선택
+            # 최신순 정렬
             latest = target_reports.sort_values(by='rcept_dt', ascending=False).iloc[0]
             
             return latest['rcept_no'], latest['report_nm']
@@ -421,36 +420,42 @@ class DartProcessor:
         except:
             return text[:30000]
 
+
+    # analyzer.py의 DartProcessor 클래스 내부
     def process(self, company_name: str, stock_code: str = None) -> Tuple[str, str, str]:
         try:
-            # 종목코드가 없으면 DART에서 찾기
-            if not stock_code:
-                code = self.dart.find_corp_code(company_name)
-            else:
-                code = stock_code
+            # [핵심 수정] stock_code(거래소 코드)를 그대로 쓰면 안 되고, 
+            # find_listed_corp_code를 통해 DART 고유번호(corp_code)로 변환해야 합니다.
+            
+            # 1. DART 고유번호 찾기
+            code = self.find_listed_corp_code(company_name, stock_code)
                 
             if not code:
-                return None, None, "DART 기업코드를 찾을 수 없습니다."
+                # 못 찾았을 경우 이름으로 재시도 (OpenDartReader 내장 함수 사용)
+                code = self.dart.find_corp_code(company_name)
+                
+            if not code:
+                return None, None, f"DART에서 기업을 찾을 수 없습니다. (종목명: {company_name})"
 
-            # [수정] 최신 보고서(분기/반기 포함) 찾기
+            # 2. 정기 보고서(사업/반기/분기) 검색
+            # 마스터님 말씀대로 상장사라면 반드시 있어야 정상입니다.
             rcept_no, report_nm = self._get_latest_report_code(code)
             
             if not rcept_no:
-                return None, None, "최근 1년 내 정기공시(사업/반기/분기)가 없습니다."
+                return None, None, "최근 1.5년 내 정기공시(사업/반기/분기)가 발견되지 않았습니다."
 
-            # 보고서 원문 다운로드
+            # 3. 보고서 원문 다운로드
             xml_text = self.dart.document(rcept_no)
             if not xml_text:
                 return report_nm, None, "보고서 원문 데이터가 비어있습니다."
 
-            # [수정] 핵심 내용만 스마트하게 추출
+            # 4. 핵심 내용 추출
             dart_text = self._extract_core_content(xml_text)
             
             return report_nm, dart_text, ""
             
         except Exception as e:
             return None, None, f"DART 처리 중 오류: {str(e)}"
-
 
 async def run_news_pipeline(target: str, config: Config, regex_cache: RegexCache) -> Tuple[List[Dict], int]:
     articles = await search_naver(target, config, regex_cache)
@@ -489,3 +494,4 @@ async def run_news_pipeline(target: str, config: Config, regex_cache: RegexCache
     
     valid.sort(key=lambda x: x['pub_date'], reverse=True)
     return valid, len(valid)
+
