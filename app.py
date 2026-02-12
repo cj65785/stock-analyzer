@@ -2,6 +2,7 @@
 import streamlit as st
 import asyncio
 import pandas as pd
+import time
 from datetime import datetime
 from openai import AsyncOpenAI
 from io import BytesIO
@@ -219,12 +220,15 @@ tab1, tab2, tab3 = st.tabs(["🚀 새 분석", "📋 전체 결과", "⭐ 즐겨
 
 # ===== 탭 1: 새 분석 =====
 with tab1:
-    st.header("🚀 새 분석 시작")
+    st.header("🚀 새 분석 시작 (자동 이어하기 모드)")
     
     # 세션 상태 초기화
     if 'pending_companies' not in st.session_state:
         st.session_state.pending_companies = []
+    if 'is_processing' not in st.session_state:
+        st.session_state.is_processing = False
     
+    # 입력창
     companies_input = st.text_area(
         "종목명 입력 (줄바꿈으로 구분)",
         value='\n'.join(st.session_state.pending_companies) if st.session_state.pending_companies else "",
@@ -233,68 +237,70 @@ with tab1:
         key="companies_input"
     )
     
-    col1, col2 = st.columns([1, 4])
-    with col1:
-        analyze_button = st.button("🔍 분석 시작", type="primary", use_container_width=True)
-    
-    if analyze_button:
+    # [버튼] 클릭 시 리스트 저장하고 처리 상태(True)로 변경 후 리로드
+    if st.button("🔍 분석 시작", type="primary", use_container_width=True):
         if not companies_input.strip():
             st.warning("⚠️ 종목명을 입력해주세요.")
         else:
+            # 리스트 파싱해서 세션에 저장
             companies_list = [c.strip() for c in companies_input.split('\n') if c.strip()]
-            st.session_state.pending_companies = companies_list.copy()
+            st.session_state.pending_companies = companies_list
+            st.session_state.is_processing = True # 처리 시작 플래그 ON
+            st.rerun() # 즉시 재실행하여 아래 로직 진입
+
+    # [자동 처리 로직] 처리 상태가 True이고 남은 종목이 있으면 실행
+    if st.session_state.is_processing and st.session_state.pending_companies:
+        
+        # 1. 배치 설정 (한 번에 5개씩)
+        BATCH_SIZE = 5
+        total_remaining = len(st.session_state.pending_companies)
+        current_batch = st.session_state.pending_companies[:BATCH_SIZE] # 앞에서 5개 자름
+        
+        st.info(f"🔄 자동 처리 중... (남은 종목: {total_remaining}개 / 이번 배치: {len(current_batch)}개)")
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # 2. 배치 분석 루프
+        processed_count = 0
+        for idx, company in enumerate(current_batch):
+            status_text.markdown(f"**[{idx+1}/{len(current_batch)}] 🔍 {company} 분석 중...**")
             
-            st.success(f"✅ 총 {len(companies_list)}개 종목 분석 시작")
+            # 종목코드 매핑
+            stock_code = CODE_MAP.get(company)
             
-            # 프로그레스 바
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            # 상태 업데이트 콜백 함수
+            def update_status(msg):
+                status_text.text(f"[{idx+1}/{len(current_batch)}] {msg}")
             
-            processed = []
-            failed = []
-            
-            # 비동기 실행
-            for idx, company in enumerate(companies_list):
-                status_text.text(f"[{idx+1}/{len(companies_list)}] {company} 분석 중...")
+            try:
+                # 기존 분석 함수 실행
+                asyncio.run(analyze_company(company, stock_code, update_status))
+                processed_count += 1
                 
-                # 종목코드 찾기
-                stock_code = CODE_MAP.get(company)
-                if not stock_code:
-                    st.warning(f"⚠️ {company}: 종목코드를 찾을 수 없습니다. 종목명으로 시도합니다.")
-                
-                def update_status(msg):
-                    status_text.text(f"[{idx+1}/{len(companies_list)}] {msg}")
-                
-                try:
-                    result = asyncio.run(analyze_company(company, stock_code, update_status))
-                    st.success(f"✅ {company} 완료")
-                    processed.append(company)
-                    
-                    # 처리 완료된 종목 제거
-                    if company in st.session_state.pending_companies:
-                        st.session_state.pending_companies.remove(company)
-                    
-                except Exception as e:
-                    st.error(f"❌ {company} 오류: {e}")
-                    failed.append(company)
-                
-                progress_bar.progress((idx + 1) / len(companies_list))
+            except Exception as e:
+                st.error(f"❌ {company} 오류: {e}")
+                # 실패해도 일단 리스트에선 넘어가야 무한루프 안 돔
             
-            status_text.text("✨ 분석 완료!")
+            progress_bar.progress((idx + 1) / len(current_batch))
+        
+        # 3. 완료된 종목 제거 (Queue Pop)
+        # 방금 처리한 BATCH_SIZE만큼 리스트 앞에서 제거
+        st.session_state.pending_companies = st.session_state.pending_companies[BATCH_SIZE:]
+        
+        # 4. 다음 단계 결정
+        if st.session_state.pending_companies:
+            # 아직 남았으면 -> 재실행 (Rerun)
+            status_text.text(f"✅ {processed_count}개 완료! 메모리 정리를 위해 1초 뒤 이어합니다...")
+            time.sleep(1)
+            st.rerun()
+        else:
+            # 다 끝났으면 -> 종료 처리
+            st.session_state.is_processing = False
+            status_text.text("✨ 모든 분석 완료!")
+            progress_bar.progress(1.0)
             st.balloons()
-            
-            # 미처리 목록 확인
-            if failed:
-                st.error(f"❌ 미처리 종목 ({len(failed)}개): {', '.join(failed)}")
-                if st.button("🔄 미처리 종목 재시도"):
-                    st.session_state.pending_companies = failed
-                    st.rerun()
-            else:
-                st.session_state.pending_companies = []
-            
-            # 결과 요약
-            st.info(f"✅ 성공: {len(processed)}개 | ❌ 실패: {len(failed)}개")
-            st.info("👉 '전체 결과' 또는 '즐겨찾기' 탭에서 결과를 확인하세요!")
+            st.success("모든 작업이 끝났습니다! '전체 결과' 탭을 확인하세요.")
 
 # ===== 탭 2: 전체 결과 =====
 with tab2:
@@ -426,3 +432,4 @@ with tab3:
             file_name=f"bookmarked_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
+
