@@ -1,499 +1,445 @@
+# app.py
+import streamlit as st
 import asyncio
-import aiohttp
-import datetime
-import re
-import requests
-import OpenDartReader
 import pandas as pd
-from typing import List, Dict, Optional, Tuple
-from urllib.parse import quote
-from bs4 import BeautifulSoup
-from difflib import SequenceMatcher
-from collections import defaultdict
+import time
+import warnings
+from datetime import datetime
+from openai import AsyncOpenAI
+from io import BytesIO
+from database import Database
+from analyzer import (
+    Config, RegexCache, DartProcessor, 
+    run_news_pipeline
+)
 
-class Config:
-    def __init__(self, CLIENT_ID: str, CLIENT_SECRET: str, DART_API_KEY: str, OPENAI_API_KEY: str):
-        self.CLIENT_ID = CLIENT_ID
-        self.CLIENT_SECRET = CLIENT_SECRET
-        self.DART_API_KEY = DART_API_KEY
-        self.OPENAI_API_KEY = OPENAI_API_KEY
-        
-        # 기본값들
-        self.MONTHS_AGO = 6
-        self.MAX_CONCURRENT = 10
-        self.REQUEST_TIMEOUT = 20
-        self.RETRY_COUNT = 3
-        self.MIN_BODY_LENGTH = 100
-        self.MAX_OTHER_COMPANIES = 5
-        self.SIMILARITY_THRESHOLD = 0.6
-        self.BODY_HEAD_CHECK = 2000
-        
-        self.KEYWORDS = [
-            "매출", "수출", "계약", "수주", "출시", "허가", "양산", "인수", "진출", "신사업", "투자", "공급"
-        ]
-        
-        self.TITLE_BLACKLIST = [
-            "특징주", "목표가", "신고가", "급락", "급등", "상한가", "폭등", "상승폭", "하락폭", "상승률",
-            "급등락", "장마감", "시황", "[특징주]", "[속보]","장을 마쳤다", "일 장중", "오늘의 주목주", "전날보다",
-            "상승 마감", "하락 마감", "주말뉴스 FULL", "팍스경제TV","동일업종 등락률", "거래일 종가", "투자 알고리즘",
-            "브리핑", "바이오스냅", "공시모음", "e공시", "e종목", "더밸류", "데일리인베스트", "IB토마토", "인포스탁",
-            "버핏 연구소", "리얼스탁", "한경유레카", "헬로스톡", "로보인베스팅", "골든클럽", "투자원정대", "오늘의 IR", "주요 공시", "IR Page",
-            "스포츠", "법률신문", "조세회계", "표창", "훈장","기념식", "후원", "선임", "광고",
-            "포럼", "증여", "상속", "수요예측", "문화대상", "브랜드평", "상장폐지", "로펌", "횡령", "VC 하우스", "주식쇼", "데이터랩",
-            "오류안내", "후속주", "로또", "평판지수", "브랜드평판", "지금이뉴스", "사외이사", "별세", "저PER", "사람인",
-            "사업자등록번호", "3파전", "엔지니어상", "장관 표창", "내달 퇴임", "소집공고", "지분 매각", "주식등의 대량보유자", "who is?",
-            "개인정보 항목", "면접 후기", "채용", "부시장", "민원처리반", "임금 체불", "총동문회", "점포거래소", "투자 핫플레이스",
-            "[상보]", "유료서비스", "marketin", "프리미엄", "simplywall", "AI리포터", "DealSite", "지속가능경영보고서"
-        ]
-        
-        self.BODY_BLACKLIST = self.TITLE_BLACKLIST.copy()
+# --------------------------------------------------------------------------
+# [설정] 지긋지긋한 경고 메시지 차단 (로그 파일 용량 확보)
+# --------------------------------------------------------------------------
+warnings.filterwarnings('ignore', category=UserWarning, module='pandas')
 
+# 페이지 설정
+st.set_page_config(
+    page_title="📊 종목 분석 게시판",
+    page_icon="📊",
+    layout="wide"
+)
 
-class RegexCache:
-    def __init__(self, companies: List[str]):
-        self.companies = companies
-        self.patterns = {}
-        for company in companies:
-            pattern = f"{re.escape(company)}(?=[ 은는이가을를의와과로서에.,\"'\n\r]|$|[^가-힣a-zA-Z0-9])"
-            self.patterns[company] = re.compile(pattern)
-    
-    def count_matches(self, text: str, exclude: str = None) -> int:
-        count = 0
-        for company, pattern in self.patterns.items():
-            if company == exclude:
-                continue
-            if pattern.search(text):
-                count += 1
-                if count >= 10:
-                    break
-        return count
-    
-    def find_any(self, text: str, exclude: str = None) -> bool:
-        for company, pattern in self.patterns.items():
-            if company == exclude:
-                continue
-            if pattern.search(text):
-                return True
-        return False
+# CSS 스타일
+st.markdown("""
+<style>
+    .main {max-width: 1200px; margin: 0 auto;}
+    .stExpander {border: 1px solid #e0e0e0; border-radius: 5px; margin-bottom: 10px;}
+    .company-title {font-size: 20px; font-weight: bold; color: #1f77b4;}
+    .date-text {color: #666; font-size: 14px;}
+    .section-header {background-color: #f0f2f6; padding: 10px; border-radius: 5px; margin-top: 20px;}
+    /* 체크박스 정렬 보정 */
+    div[data-testid="stCheckbox"] { margin-top: 5px; }
+</style>
+""", unsafe_allow_html=True)
 
+# 데이터베이스 초기화
+@st.cache_resource
+def get_database():
+    database_url = st.secrets.get("DATABASE_URL")
+    return Database(database_url)
 
-def clean_html(text: str) -> str:
-    text = re.sub(r'<[^>]+>', '', text)
-    text = text.replace("&quot;", '"').replace("&lt;", "<")
-    text = text.replace("&gt;", ">").replace("&amp;", "&")
-    return text.strip()
+db = get_database()
 
+# Config 초기화
+@st.cache_resource
+def get_config():
+    return Config(
+        CLIENT_ID=st.secrets.get("NAVER_CLIENT_ID"),
+        CLIENT_SECRET=st.secrets.get("NAVER_CLIENT_SECRET"),
+        DART_API_KEY=st.secrets.get("DART_API_KEY"),
+        OPENAI_API_KEY=st.secrets.get("OPENAI_API_KEY")
+    )
 
-def parse_date(date_str: str) -> Optional[datetime.datetime]:
+config = get_config()
+openai_client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
+
+# 상장사 목록 로드 (종목코드 포함)
+@st.cache_resource
+def load_companies():
     try:
-        dt = datetime.datetime.strptime(date_str, "%a, %d %b %Y %H:%M:%S %z")
-        return dt.replace(tzinfo=None)
-    except:
-        return None
-
-
-def similarity(s1: str, s2: str) -> float:
-    return SequenceMatcher(None, s1, s2).ratio()
-
-
-def clean_body_final(text: str) -> str:
-    if not text:
-        return ""
-    
-    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    email_match = re.search(email_pattern, text)
-    if email_match:
-        text = text[:email_match.start()].strip()
-    
-    cutoff_patterns = [
-        r'관련\s*기사', r'다른\s*기사', r'추천\s*기사', r'인기\s*기사',
-        r'더\s*보기', r'See more', r'Tag\s*#', r'#바이오',
-        r'저작권자', r'무단\s*전재', r'재배포\s*금지',
-        r'Copyright', r'All rights reserved', r'개인정보\s*보호',
-        r'구독\s*신청', r'뉴스\s*스탠드', r'좋아요\s*슬퍼요',
-        r'기사\s*제보', r'댓글\s*작성', r'많이\s*본\s*뉴스',
-        r'지금\s*뜨는', r'공유하기', r'URL\s*복사',
-        r'글자\s*크기', r'기사\s*듣기', r'인쇄하기', r'읽기모드',
-    ]
-    
-    for pattern in cutoff_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            text = text[:match.start()].strip()
-    
-    lines = text.split('\n')
-    clean_lines = []
-    
-    noise_patterns = [
-        r'기자\s*=', r'특파원\s*=', r'©|ⓒ',
-        r'사진\s*=', r'출처\s*:', r'자료\s*:',
-        r'\d{2,4}-\d{2,4}-\d{4}', r'FAX|Fax|fax',
-    ]
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-        if len(line) < 15:
-            continue
-        if any(re.search(p, line) for p in noise_patterns):
-            continue
-        clean_lines.append(line)
-    
-    text = '\n'.join(clean_lines)
-    text = re.sub(r'\n{2,}', '\n', text)
-    
-    return text.strip()
-
-
-class HTTPClient:
-    def __init__(self, config: Config):
-        self.config = config
-        self.session = None
-    
-    async def __aenter__(self):
-        timeout = aiohttp.ClientTimeout(total=self.config.REQUEST_TIMEOUT)
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        self.session = aiohttp.ClientSession(headers=headers, timeout=timeout)
-        return self
-    
-    async def __aexit__(self, *args):
-        if self.session:
-            await self.session.close()
-    
-    async def fetch(self, url: str) -> Tuple[int, str]:
-        for attempt in range(self.config.RETRY_COUNT):
-            try:
-                async with self.session.get(url) as resp:
-                    content = await resp.read()
-                    try:
-                        text = content.decode('utf-8')
-                    except:
-                        try:
-                            text = content.decode('euc-kr')
-                        except:
-                            text = content.decode('cp949', errors='ignore')
-                    return (resp.status, text)
-            except Exception as e:
-                if attempt == self.config.RETRY_COUNT - 1:
-                    pass
-                await asyncio.sleep(0.5 * (attempt + 1))
-        return (0, "")
-
-
-async def extract_body(url: str, client: HTTPClient) -> str:
-    status, html = await client.fetch(url)
-    if status != 200 or not html:
-        return ""
-    
-    try:
-        soup = BeautifulSoup(html, 'html.parser')
-        
-        selectors = [
-            'div#dic_area', 'div#articleBodyContents', 'div.article_body',
-            'div#article-view-content-div', 'div.news_cnt_detail_wrap',
-            'article.article-body', 'div#newsct_article', 'div.article-body',
-            'article', 'div#content',
-        ]
-        
-        body_elem = None
-        for sel in selectors:
-            body_elem = soup.select_one(sel)
-            if body_elem:
-                break
-        
-        if not body_elem:
-            body_elem = soup.find('body') or soup
-        
-        for tag in body_elem.find_all(['script', 'style', 'header', 'footer',
-                                     'nav', 'aside', 'form', 'iframe', 'button']):
-            tag.decompose()
-        
-        text = body_elem.get_text(separator='\n')
-        body = clean_body_final(text)
-        
-        return body
-        
-    except:
-        return ""
-
-
-async def search_naver(target: str, config: Config, regex_cache: RegexCache) -> List[Dict]:
-    cutoff = datetime.datetime.now() - datetime.timedelta(days=config.MONTHS_AGO * 30)
-    headers = {
-        "X-Naver-Client-Id": config.CLIENT_ID,
-        "X-Naver-Client-Secret": config.CLIENT_SECRET
-    }
-    
-    collected = []
-    seen_urls = set()
-    
-    async with aiohttp.ClientSession(headers=headers) as session:
-        for keyword in config.KEYWORDS:
-            query = f'"{target}" "{keyword}"'
-            
-            for start in range(1, 1001, 100):
-                url = f"https://openapi.naver.com/v1/search/news.json?query={quote(query)}&display=100&start={start}&sort=date"
-                
-                try:
-                    async with session.get(url) as resp:
-                        if resp.status != 200:
-                            break
-                        data = await resp.json()
-                        items = data.get('items', [])
-                        if not items:
-                            break
-                        
-                        stop = False
-                        for item in items:
-                            pub_date = parse_date(item.get('pubDate', ''))
-                            if not pub_date or pub_date < cutoff:
-                                stop = True
-                                break
-                            
-                            link = item.get('originallink') or item.get('link')
-                            if link in seen_urls:
-                                continue
-                            
-                            title = clean_html(item.get('title', ''))
-                            
-                            bl_found = None
-                            for bl in config.TITLE_BLACKLIST:
-                                if bl in title:
-                                    bl_found = bl
-                                    break
-                            if bl_found:
-                                continue
-                            
-                            if target not in title:
-                                if regex_cache.find_any(title, exclude=target):
-                                    continue
-                            
-                            seen_urls.add(link)
-                            collected.append({
-                                'title': title,
-                                'link': link,
-                                'date': item['pubDate'],
-                                'pub_date': pub_date
-                            })
-                        
-                        if stop:
-                            break
-                except Exception as e:
-                    break
-    
-    return collected
-
-
-def deduplicate(articles: List[Dict], threshold: float) -> List[Dict]:
-    seen_urls = set()
-    by_date = defaultdict(list)
-    unique = []
-    
-    for art in articles:
-        url = art['link']
-        if url in seen_urls:
-            continue
-        
-        date_key = art['pub_date'].strftime('%Y-%m-%d')
-        
-        is_dup = False
-        for existing in by_date[date_key]:
-            if similarity(art['title'], existing['title']) >= threshold:
-                is_dup = True
-                break
-        
-        if is_dup:
-            continue
-        
-        seen_urls.add(url)
-        by_date[date_key].append(art)
-        unique.append(art)
-    
-    return unique
-
-
-class DartProcessor:
-    def __init__(self, api_key: str):
-        import shutil
-        from pathlib import Path
-        
-        cache_dir = Path.home() / '.OpenDart'
-        
+        # cp949 인코딩 시도
         try:
-            self.dart = OpenDartReader(api_key)
-        except Exception as e:
-            if cache_dir.exists():
-                shutil.rmtree(cache_dir)
-            self.dart = OpenDartReader(api_key)
-
-    def clean_text(self, text: str) -> str:
-        text = re.sub(r'[ \t]+', ' ', text)
-        text = re.sub(r'\n{3,}', '\n\n', text)
-        lines = []
-        for line in text.split('\n'):
-            line = line.strip()
-            if not line: continue
-            if len(line) < 3: continue
-            lines.append(line)
-        return '\n'.join(lines).strip()
-
-    def find_listed_corp_code(self, company_name: str, stock_code: str = None) -> Optional[str]:
-        # 종목코드 또는 종목명으로 corp_code 찾기
-        try:
-            df = self.dart.corp_codes
-            
-            # 1. 종목코드로 먼저 찾기 (우선)
-            if stock_code:
-                if stock_code.startswith('A') or stock_code.startswith('a'):
-                    clean_code = stock_code[1:].strip().zfill(6)
-                else:
-                    clean_code = stock_code.strip().zfill(6)
-                
-                # 안전한 비교를 위해 astype(str) 사용
-                matched = df[df['stock_code'].astype(str).str.strip() == clean_code]
-                if not matched.empty:
-                    return matched.iloc[0]['corp_code']
-            
-            # 2. 종목명으로 찾기 (fallback)
-            candidates = df[df['corp_name'] == company_name]
-            if candidates.empty:
-                candidates = df[df['corp_name'].str.replace(" ", "") == company_name.replace(" ", "")]
-            
-            if candidates.empty:
-                return None
-                
-            if 'stock_code' in candidates.columns:
-                listed = candidates[candidates['stock_code'].notnull() & (candidates['stock_code'].astype(str).str.strip() != '')]
-                if not listed.empty:
-                    return listed.iloc[0]['corp_code']
-            
-            return candidates.iloc[0]['corp_code']
-        except Exception as e:
-            return None
-
-    def process(self, company_name: str, stock_code: str = None) -> Tuple[str, str, str]:
-        # 종목 분석 (종목코드 지원)
-        code = self.find_listed_corp_code(company_name, stock_code)
-        if not code:
-            return "", "", "DART에 등록되지 않은 기업명입니다."
-            
-        try:
-            start_date = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime("%Y-%m-%d")
-            # 1순위: 사업/분기/반기 보고서 조회
-            reports = self.dart.list(code, start=start_date, kind='A', final=False)
-            
-            if reports is None or (isinstance(reports, pd.DataFrame) and reports.empty):
-                # 2순위: 전체 보고서 조회
-                reports = self.dart.list(code, start=start_date, final=False)
-
-            if reports is None or (isinstance(reports, pd.DataFrame) and reports.empty):
-                return "", "", "최근 1년 내 조회된 공시가 없습니다."
-                 
-        except Exception as e:
-            return "", "", f"보고서 목록 검색 오류: {e}"
+            df = pd.read_csv('krx_stocks.csv', encoding='cp949')
+        except:
+            df = pd.read_csv('krx_stocks.csv', encoding='utf-8')
         
-        target_pattern = '사업보고서|분기보고서|반기보고서'
-        filtered = reports[reports['report_nm'].str.contains(target_pattern, na=False)].copy()
-        
-        if filtered.empty:
-            return "", "", "최근 1년 내 정기 보고서(사업/분기/반기) 없음"
+        # 종목코드 매핑 생성 (종목명 -> 종목코드)
+        code_map = dict(zip(df['종목명'], df['종목코드']))
+        companies = df['종목명'].dropna().astype(str).str.strip().tolist()
+        return companies, RegexCache(companies), code_map
+    except Exception as e:
+        st.error(f"CSV 로드 오류: {e}")
+        return [], None, {}
 
-        filtered.sort_values(by='rcept_dt', ascending=False, inplace=True)
-        latest = filtered.iloc[0]
-        
-        rcp_no = latest.get('rcept_no')
-        report_nm = latest.get('report_nm')
+ALL_COMPANIES, REGEX_CACHE, CODE_MAP = load_companies()
 
-        try:
-            sub_docs = self.dart.sub_docs(rcp_no)
-        except Exception as e:
-            return report_nm, "", f"하위문서 목록 조회 실패: {e}"
-            
-        if sub_docs is None or sub_docs.empty:
-            return report_nm, "", "하위문서(목차)가 비어있음"
-        
-        business_docs = []
-        in_business = False
-        
-        for idx, row in sub_docs.iterrows():
-            title = row.get('title', '').strip()
-            url = row.get('url', '')
-            
-            if '사업의 내용' in title:
-                in_business = True
-                continue
-            
-            if '재무에 관한 사항' in title:
-                break
-                
-            if in_business and url:
-                business_docs.append({'title': title, 'url': url})
-        
-        if not business_docs:
-            # 사업의 내용 섹션 명시적으로 못 찾으면 '사업의 내용'이 포함된 것 찾기
-            for idx, row in sub_docs.iterrows():
-                 if '사업의 내용' in row.get('title', ''):
-                      business_docs.append({'title': row.get('title'), 'url': row.get('url')})
-
-        if not business_docs:
-             return report_nm, "", "'사업의 내용' 섹션 없음"
-
-        full_text = []
-        for doc in business_docs:
-            try:
-                resp = requests.get(doc['url'], headers={'User-Agent': 'Mozilla/5.0'}, timeout=30)
-                if resp.status_code == 200:
-                    soup = BeautifulSoup(resp.text, 'html.parser')
-                    text = self.clean_text(soup.get_text(separator='\n'))
-                    if len(text) > 100:
-                        full_text.append(f"[{doc['title']}]\n{text}")
-            except:
-                pass
-        
-        result = '\n\n'.join(full_text)
-        if not result:
-            return report_nm, "", "본문 텍스트 추출 실패"
-             
-        return report_nm, result, ""
-
-
-async def run_news_pipeline(target: str, config: Config, regex_cache: RegexCache) -> Tuple[List[Dict], int]:
-    articles = await search_naver(target, config, regex_cache)
+# GPT 분석 함수 (뉴스)
+async def analyze_news_with_gpt(company_name: str, articles: list) -> str:
     if not articles:
-        return [], 0
+        return "분석할 뉴스 기사가 없습니다."
     
-    articles = deduplicate(articles, config.SIMILARITY_THRESHOLD)
+    articles.sort(key=lambda x: x['pub_date'], reverse=True)
+    context = ""
+    for i, art in enumerate(articles):
+        d = art['pub_date'].strftime('%Y-%m-%d')
+        context += f"[[기사 {i+1}]] {d} / {art['title']}\n{art['body'][:5000]}...\n\n"
+
+    system_prompt = f"""
+당신은 주식 시장의 '모멘텀 전문 분석가'입니다. 
+제공된 뉴스 기사들을 정밀 분석하여, 이 회사의 미래 기업 가치 상승에 기여할 수 있는 '핵심 모멘텀'만 추출하세요.
+
+[대원칙]
+⚠️ 반드시 "{company_name}" 회사와 직접 관련된 내용만 작성하십시오.
+- 산업 전반의 동향, 다른 회사의 사례, 일반적인 시장 분석은 절대 포함하지 마십시오.
+- "{company_name}"이 주어(主語)가 되는 문장만 작성하십시오.
+
+[작성 규칙]
+1. 단순히 실적을 나열하거나 이미 반영된 뉴스는 제외하십시오.
+2. '매출', '수출', '수주', '계약', '신제품', "양산", '캐파', 'M&A' 등 미래 주가를 끌어올릴 강력한 재료 위주로 요약하십시오.
+3. 중복된 내용은 하나로 합치고, 구체적인 숫자나 시기 등이 언급된 경우 반드시 넣어주기 바랍니다.
+4. 반드시 아래 포맷을 엄격하게 지키십시오. 서론이나 결론(인사말 등)은 절대 쓰지 마십시오.
+5. 창작이 아닌 기사의 내용을 근거로 요약해야합니다.
+6. 투자와 관련없는 내용은 배제하되, 가능한 많은 모멘텀을 작성합니다.
+
+[출력 포맷]
+1️⃣ 모멘텀 제목 (yyyy.mm.dd.)
+- {company_name}의 모멘텀 관련 핵심 내용 요약
+
+2️⃣ 모멘텀 제목 (yyyy.mm.dd.)
+- {company_name}의 모멘텀 관련 핵심 내용 요약
+"""
     
-    semaphore = asyncio.Semaphore(config.MAX_CONCURRENT)
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"[기사 목록]\n{context}"}
+            ],
+            temperature=0.1
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"GPT 오류: {e}"
+
+# GPT 분석 함수 (DART)
+async def analyze_dart_with_gpt(company_name: str, report_nm: str, dart_text: str) -> str:
+    if not dart_text or len(dart_text) < 100:
+        return "DART 보고서 내용을 추출할 수 없습니다."
     
-    async with HTTPClient(config) as client:
-        async def process(art):
-            async with semaphore:
-                body = await extract_body(art['link'], client)
-                
-                if not body:
-                    return None
-                if len(body) < config.MIN_BODY_LENGTH:
-                    return None
-                if target not in body:
-                    return None
-                if target not in body[:config.BODY_HEAD_CHECK]:
-                    return None
-                if regex_cache.count_matches(body[:3000], exclude=target) >= config.MAX_OTHER_COMPANIES:
-                    return None
-                for bl in config.BODY_BLACKLIST:
-                    if bl in body:
-                        return None
-                
-                art['body'] = body
-                return art
+    dart_context = dart_text[:50000]
+
+    system_prompt = f"""
+당신은 주식 시장의 '모멘텀 전문 분석가'입니다.
+제공된 DART 사업보고서를 분석하여, "{company_name}"의 기업 가치 상승에 기여할 수 있는 '핵심 모멘텀'만 추출하세요.
+
+[작성 규칙]
+1. 기업 가치(Valuation) 리레이팅을 유발할 수 있는 모든 재료를 상세히 적으십시오.
+2. 신사업 진출, 신규 고객 확보, 증설, M&A, 퀄테스트 통과, 벤더 등록, 수출 지역 다변화 등 구체적인 근거를 포함하여 상세하게 작성하십시오.
+3. 현황을 적는 것이 아닌, 기업 가치를 레벨업 시키는 핵심 성과 및 미래 기대감을 적습니다.
+4. 반드시 주어진 자료 내의 내용만으로 작성하며, 외부 지식을 가져오거나 없는 내용을 추론하지 마십시오.
+
+[출력 포맷]
+- 모멘텀 내용 1
+
+- 모멘텀 내용 2
+
+- 모멘텀 내용 3
+"""
+    
+    try:
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"기업명: {company_name}\n보고서: {report_nm}\n\n[DART 사업보고서 내용]\n{dart_context}"}
+            ],
+            temperature=0.1
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return f"GPT 오류: {e}"
+
+# 통합 분석 함수
+async def analyze_company(company_name: str, stock_code: str = None, progress_callback=None):
+    # 1. DART 분석
+    if progress_callback:
+        progress_callback(f"📊 {company_name} DART 공시 수집 중...")
+    
+    dart_processor = DartProcessor(config.DART_API_KEY)
+    report_nm, dart_text, dart_error = dart_processor.process(company_name, stock_code)
+    
+    if dart_text:
+        if progress_callback:
+            progress_callback(f"🤖 {company_name} DART AI 분석 중...")
+        dart_result = await analyze_dart_with_gpt(company_name, report_nm, dart_text)
+    else:
+        dart_result = "분석할 보고서 원문이 없습니다."
+    
+    # 2. 뉴스 분석
+    if progress_callback:
+        progress_callback(f"📰 {company_name} 뉴스 수집 중...")
+    
+    articles, news_count = await run_news_pipeline(company_name, config, REGEX_CACHE)
+    
+    if progress_callback:
+        progress_callback(f"🤖 {company_name} 뉴스 AI 분석 중...")
+    
+    news_result = await analyze_news_with_gpt(company_name, articles)
+    
+    # 3. DB 저장
+    db.add_result(
+        company_name=company_name,
+        dart_report=report_nm or "없음",
+        dart_result=dart_result,
+        dart_error=dart_error or "",
+        news_count=news_count,
+        news_result=news_result
+    )
+    
+    return True
+
+# ==================== UI 시작 ====================
+
+# 제목은 너무 크다고 하셔서 지우거나 작게 처리
+# st.title("📊 종목 분석 게시판") (삭제함)
+st.subheader("📊 종목 분석 게시판") 
+st.markdown("---")
+
+# 탭 생성
+tab1, tab2, tab3 = st.tabs(["🚀 새 분석", "📋 전체 결과", "⭐ 즐겨찾기"])
+
+# ===== 탭 1: 새 분석 (자동 이어하기 모드) =====
+with tab1:
+    st.header("🚀 새 분석 시작 (자동 이어하기 모드)")
+    
+    if 'is_processing' not in st.session_state:
+        st.session_state.is_processing = False
+    
+    if 'pending_companies' not in st.session_state:
+        st.session_state.pending_companies = []
+    
+    companies_input = st.text_area(
+        "종목명 입력 (줄바꿈으로 구분)",
+        value='\n'.join(st.session_state.pending_companies) if st.session_state.pending_companies and not st.session_state.is_processing else "",
+        placeholder="삼성전자\nSK하이닉스\n케어젠",
+        height=150,
+        key="companies_input",
+        disabled=st.session_state.is_processing
+    )
+    
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        analyze_button = st.button("🔍 분석 시작", type="primary", use_container_width=True, disabled=st.session_state.is_processing)
+    
+    # 버튼 클릭 시 리스트 저장 및 시작
+    if analyze_button:
+        if not companies_input.strip():
+            st.warning("⚠️ 종목명을 입력해주세요.")
+        else:
+            companies_list = [c.strip() for c in companies_input.split('\n') if c.strip()]
+            st.session_state.pending_companies = companies_list
+            st.session_state.is_processing = True
+            st.rerun()
+
+    # 자동 처리 로직
+    if st.session_state.is_processing and st.session_state.pending_companies:
         
-        tasks = [process(art) for art in articles]
-        results = await asyncio.gather(*tasks)
-        valid = [r for r in results if r]
+        BATCH_SIZE = 5
+        total_remaining = len(st.session_state.pending_companies)
+        current_batch = st.session_state.pending_companies[:BATCH_SIZE]
+        
+        st.info(f"🔄 자동 처리 중... (남은 종목: {total_remaining}개 / 이번 배치: {len(current_batch)}개)")
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        processed_count = 0
+        
+        for idx, company in enumerate(current_batch):
+            status_text.markdown(f"**[{idx+1}/{len(current_batch)}] 🔍 {company} 분석 중...**")
+            
+            stock_code = CODE_MAP.get(company)
+            
+            def update_status(msg):
+                status_text.text(f"[{idx+1}/{len(current_batch)}] {msg}")
+            
+            try:
+                # 비동기 함수 실행
+                asyncio.run(analyze_company(company, stock_code, update_status))
+                processed_count += 1
+                
+            except Exception as e:
+                st.error(f"❌ {company} 오류: {e}")
+                # 실패해도 일단 진행
+            
+            progress_bar.progress((idx + 1) / len(current_batch))
+        
+        # 처리 완료된 목록 제거
+        st.session_state.pending_companies = st.session_state.pending_companies[BATCH_SIZE:]
+        
+        if st.session_state.pending_companies:
+            status_text.text(f"✅ {processed_count}개 완료! 메모리 정리를 위해 1초 뒤 이어합니다...")
+            time.sleep(1) 
+            st.rerun() 
+        else:
+            st.session_state.is_processing = False
+            status_text.text("✨ 모든 분석 완료!")
+            progress_bar.progress(1.0)
+            st.balloons()
+            st.success("✅ 모든 작업이 끝났습니다! '전체 결과' 탭을 확인하세요.")
+            
+            if st.button("새로 시작하기"):
+                st.rerun()
+
+# ===== 탭 2: 전체 결과 (삭제 기능 포함) =====
+with tab2:
+    st.header("📋 전체 결과 (관리 모드)")
     
-    valid.sort(key=lambda x: x['pub_date'], reverse=True)
-    return valid, len(valid)
+    col_search, col_action, col_count = st.columns([3, 2, 1])
+    
+    with col_search:
+        search_keyword = st.text_input("🔍 검색", placeholder="종목명 입력", key="search_all")
+    
+    with col_count:
+        total_count = db.get_count()
+        st.metric("총 분석 수", f"{total_count}개")
+
+    if search_keyword:
+        results = db.search_results(search_keyword)
+    else:
+        results = db.get_all_results(limit=100)
+    
+    with col_action:
+        st.write("")
+        if st.button("🗑️ 선택된 항목 삭제", type="primary"):
+            deleted_count = 0
+            for result in results:
+                if st.session_state.get(f"del_{result['id']}"):
+                    db.delete_result(result['id'])
+                    deleted_count += 1
+            
+            if deleted_count > 0:
+                st.success(f"✅ {deleted_count}개 항목을 삭제했습니다.")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.warning("⚠️ 삭제할 항목을 선택해주세요.")
+
+    st.markdown("---")
+
+    if not results:
+        st.info("📝 분석 결과가 없습니다.")
+    else:
+        for result in results:
+            created_at = result['created_at']
+            if isinstance(created_at, str):
+                created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+            date_str = created_at.strftime('%Y-%m-%d %H:%M')
+            
+            bookmark_icon = "⭐" if result.get('is_bookmarked') else "☆"
+            
+            c_check, c_content = st.columns([1, 20])
+            
+            with c_check:
+                # [수정] label_visibility="collapsed" 추가하여 경고 제거
+                st.checkbox("삭제", key=f"del_{result['id']}", label_visibility="collapsed")
+                
+            with c_content:
+                with st.expander(f"{bookmark_icon} {result['company_name']} - {date_str}"):
+                    
+                    col_bookmark, col_space = st.columns([1, 5])
+                    with col_bookmark:
+                        if st.button(f"{bookmark_icon} 즐겨찾기", key=f"bookmark_{result['id']}"):
+                            db.toggle_bookmark(result['id'])
+                            st.rerun()
+                    
+                    st.markdown('<div class="section-header">📊 DART 보고서 모멘텀</div>', unsafe_allow_html=True)
+                    if result['dart_error']:
+                        st.warning(f"⚠️ {result['dart_error']}")
+                    else:
+                        st.write(f"**보고서:** {result['dart_report']}")
+                        st.text(result['dart_result'])
+                    
+                    st.markdown("---")
+                    
+                    st.markdown('<div class="section-header">📰 뉴스 모멘텀 (최근 6개월)</div>', unsafe_allow_html=True)
+                    st.write(f"**수집 기사:** {result['news_count']}건")
+                    st.text(result['news_result'])
+    
+    # 엑셀 다운로드
+    if results:
+        st.markdown("---")
+        df = db.to_dataframe()
+        
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='분석결과')
+        output.seek(0)
+        
+        st.download_button(
+            label="📥 전체 결과 엑셀 다운로드",
+            data=output,
+            file_name=f"stock_analysis_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+# ===== 탭 3: 즐겨찾기 =====
+with tab3:
+    st.header("⭐ 즐겨찾기 (관심 종목)")
+    
+    bookmarked_results = db.get_bookmarked_results()
+    
+    if not bookmarked_results:
+        st.info("⭐ 즐겨찾기한 종목이 없습니다.")
+    else:
+        st.success(f"📌 총 {len(bookmarked_results)}개의 관심 종목이 있습니다.")
+        st.markdown("---")
+        
+        for result in bookmarked_results:
+            created_at = result['created_at']
+            if isinstance(created_at, str):
+                created_at = datetime.strptime(created_at, '%Y-%m-%d %H:%M:%S')
+            date_str = created_at.strftime('%Y-%m-%d %H:%M')
+            
+            with st.expander(f"⭐ {result['company_name']} - {date_str}"):
+                
+                col_btn, col_empty = st.columns([1, 5])
+                with col_btn:
+                    if st.button("💔 즐겨찾기 해제", key=f"unbookmark_{result['id']}"):
+                        db.toggle_bookmark(result['id'])
+                        st.rerun()
+                
+                st.markdown('<div class="section-header">📊 DART 보고서 모멘텀</div>', unsafe_allow_html=True)
+                if result['dart_error']:
+                    st.warning(f"⚠️ {result['dart_error']}")
+                else:
+                    st.write(f"**보고서:** {result['dart_report']}")
+                    st.text(result['dart_result'])
+                
+                st.markdown("---")
+                
+                st.markdown('<div class="section-header">📰 뉴스 모멘텀 (최근 6개월)</div>', unsafe_allow_html=True)
+                st.write(f"**수집 기사:** {result['news_count']}건")
+                st.text(result['news_result'])
+        
+        st.markdown("---")
+        df_bookmarked = pd.DataFrame(bookmarked_results)
+        
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df_bookmarked.to_excel(writer, index=False, sheet_name='즐겨찾기')
+        output.seek(0)
+        
+        st.download_button(
+            label="📥 즐겨찾기 목록 엑셀 다운로드",
+            data=output,
+            file_name=f"bookmarked_stocks_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
