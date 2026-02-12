@@ -370,36 +370,36 @@ class DartProcessor:
         except Exception as e:
             return None
 
-def _get_latest_report_code(self, corp_code):
-        """
-        가장 최신의 정기공시(사업/반기/분기)를 찾아 보고서 번호와 제목을 반환합니다.
-        (단순 사업보고서만 찾으면 1년 전 데이터를 볼 위험이 있어 수정함)
-        """
-        try:
-            # 1년치 공시 목록 조회
-            end_dt = datetime.datetime.now().strftime('%Y%m%d')
-            start_dt = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y%m%d')
-            
-            # 전체 공시 목록 가져오기
-            reports = self.dart.list(corp_code=corp_code, start=start_dt, end=end_dt, final=False)
-            
-            if reports is None or reports.empty:
-                return None, None
-            
-            # 보고서명에 '사업보고서', '분기보고서', '반기보고서'가 포함된 것만 필터링
-            target_reports = reports[reports['report_nm'].str.contains('사업보고서|분기보고서|반기보고서', regex=True)]
-            
-            if target_reports.empty:
-                return None, None
+    def _get_latest_report_code(self, corp_code):
+            """
+            가장 최신의 정기공시(사업/반기/분기)를 찾아 보고서 번호와 제목을 반환합니다.
+            (단순 사업보고서만 찾으면 1년 전 데이터를 볼 위험이 있어 수정함)
+            """
+            try:
+                # 1년치 공시 목록 조회
+                end_dt = datetime.datetime.now().strftime('%Y%m%d')
+                start_dt = (datetime.datetime.now() - datetime.timedelta(days=365)).strftime('%Y%m%d')
                 
-            # 접수일자(rcept_dt) 기준 내림차순 정렬하여 가장 최신 것 선택
-            latest = target_reports.sort_values(by='rcept_dt', ascending=False).iloc[0]
-            
-            return latest['rcept_no'], latest['report_nm']
-            
-        except Exception as e:
-            print(f"DART 목록 조회 실패: {e}")
-            return None, None
+                # 전체 공시 목록 가져오기
+                reports = self.dart.list(corp_code=corp_code, start=start_dt, end=end_dt, final=False)
+                
+                if reports is None or reports.empty:
+                    return None, None
+                
+                # 보고서명에 '사업보고서', '분기보고서', '반기보고서'가 포함된 것만 필터링
+                target_reports = reports[reports['report_nm'].str.contains('사업보고서|분기보고서|반기보고서', regex=True)]
+                
+                if target_reports.empty:
+                    return None, None
+                    
+                # 접수일자(rcept_dt) 기준 내림차순 정렬하여 가장 최신 것 선택
+                latest = target_reports.sort_values(by='rcept_dt', ascending=False).iloc[0]
+                
+                return latest['rcept_no'], latest['report_nm']
+                
+            except Exception as e:
+                print(f"DART 목록 조회 실패: {e}")
+                return None, None
 
     def _extract_core_content(self, text):
         """
@@ -489,4 +489,5 @@ async def run_news_pipeline(target: str, config: Config, regex_cache: RegexCache
     
     valid.sort(key=lambda x: x['pub_date'], reverse=True)
     return valid, len(valid)
+
 
