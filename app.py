@@ -227,12 +227,13 @@ tab1, tab2, tab3 = st.tabs(["수집", "결과", "보관"])
 with tab1:
     if 'is_processing' not in st.session_state: st.session_state.is_processing = False
     if 'pending_companies' not in st.session_state: st.session_state.pending_companies = []
+    if 'completed_companies' not in st.session_state: st.session_state.completed_companies = []
 
     c1, c2 = st.columns([8, 2])
     with c1:
         companies_input = st.text_area(
             "Input",
-            value='\n'.join(st.session_state.pending_companies) if st.session_state.pending_companies and not st.session_state.is_processing else "",
+            value="" if st.session_state.is_processing else "",
             height=80, label_visibility="collapsed",
             placeholder="종목명 입력 (엔터 구분)"
         )
@@ -240,20 +241,39 @@ with tab1:
         if st.button("실행", use_container_width=True, disabled=st.session_state.is_processing):
             if companies_input.strip():
                 st.session_state.pending_companies = [c.strip() for c in companies_input.split('\n') if c.strip()]
+                st.session_state.completed_companies = []
                 st.session_state.is_processing = True
                 st.rerun()
 
     if st.session_state.is_processing and st.session_state.pending_companies:
-        BATCH = 5
-        curr = st.session_state.pending_companies[:BATCH]
-        st.caption(f"⏳ 작업중... 남은 {len(st.session_state.pending_companies)}건")
-        for c in curr:
-            asyncio.run(analyze_company(c, CODE_MAP.get(c)))
-        st.session_state.pending_companies = st.session_state.pending_companies[BATCH:]
-        if st.session_state.pending_companies:
-            time.sleep(0.5); st.rerun()
-        else:
-            st.session_state.is_processing = False; st.rerun()
+        total = len(st.session_state.pending_companies) + len(st.session_state.completed_companies)
+        done = len(st.session_state.completed_companies)
+        
+        with st.status(f"처리중 ({done}/{total})", expanded=True) as status:
+            # 이미 완료된 항목 표시
+            for name in st.session_state.completed_companies:
+                st.write(f"✅ {name}")
+            
+            # 현재 배치 처리
+            BATCH = 5
+            curr = st.session_state.pending_companies[:BATCH]
+            for c in curr:
+                st.write(f"⏳ {c} 처리중...")
+                asyncio.run(analyze_company(c, CODE_MAP.get(c)))
+                st.session_state.completed_companies.append(c)
+            
+            st.session_state.pending_companies = st.session_state.pending_companies[BATCH:]
+            
+            if st.session_state.pending_companies:
+                done_now = len(st.session_state.completed_companies)
+                status.update(label=f"처리중 ({done_now}/{total})")
+                time.sleep(0.3)
+                st.rerun()
+            else:
+                status.update(label=f"완료 ({total}/{total})", state="complete", expanded=False)
+                st.session_state.is_processing = False
+                st.session_state.completed_companies = []
+                st.rerun()
 
 # ──── [2] 결과 ────
 with tab2:
