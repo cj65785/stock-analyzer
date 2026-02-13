@@ -107,14 +107,8 @@ def clean_body_final(text: str) -> str:
         text = text[:email_match.start()].strip()
     
     cutoff_patterns = [
-        r'관련\s*기사', r'다른\s*기사', r'추천\s*기사', r'인기\s*기사',
-        r'더\s*보기', r'See more', r'Tag\s*#', r'#바이오',
-        r'저작권자', r'무단\s*전재', r'재배포\s*금지',
-        r'Copyright', r'All rights reserved', r'개인정보\s*보호',
-        r'구독\s*신청', r'뉴스\s*스탠드', r'좋아요\s*슬퍼요',
-        r'기사\s*제보', r'댓글\s*작성', r'많이\s*본\s*뉴스',
-        r'지금\s*뜨는', r'공유하기', r'URL\s*복사',
-        r'글자\s*크기', r'기사\s*듣기', r'인쇄하기', r'읽기모드',
+        r'더\s*보기', r'See more', r'저작권자', r'무단\s*전재', r'재배포\s*금지',
+        r'Copyright', r'All rights reserved', r'개인정보\s*보호', r'구독\s*신청', r'뉴스\s*스탠드', r'좋아요\s*슬퍼요',
     ]
     
     for pattern in cutoff_patterns:
@@ -498,4 +492,5 @@ async def run_news_pipeline(target: str, config: Config, regex_cache: RegexCache
     
     valid.sort(key=lambda x: x['pub_date'], reverse=True)
     return valid, len(valid)
+
 
