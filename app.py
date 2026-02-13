@@ -50,7 +50,7 @@ st.markdown("""
         gap: 0; border-bottom: 2px solid #ddd; padding: 0 4px;
     }
     .stTabs [data-baseweb="tab"] {
-        height: 36px; font-size: 18px; padding: 0 18px;
+        height: 36px; font-size: 17px; padding: 0 17px;
         color: #888; border-bottom: 2px solid transparent; margin-bottom: -2px;
     }
     .stTabs [data-baseweb="tab"][aria-selected="true"] {
@@ -66,7 +66,7 @@ st.markdown("""
         margin: 0 !important; padding: 0 !important; border-radius: 0 !important;
     }
     .stExpander > details > summary {
-        padding: 9px 4px !important; font-size: 18px !important;
+        padding: 9px 4px !important; font-size: 17px !important;
         color: #333 !important; min-height: 0 !important;
         line-height: 1.35 !important; font-weight: 400 !important;
     }
@@ -90,7 +90,7 @@ st.markdown("""
     .stButton > button:hover { background: #f0f0f0; border-color: #aaa; }
 
     /* ── 입력 ── */
-    .stTextArea textarea, .stTextInput input { font-size: 18px; }
+    .stTextArea textarea, .stTextInput input { font-size: 17px; }
     .stDownloadButton > button { height: 28px; font-size: 11.5px; padding: 0 12px; }
 </style>
 """, unsafe_allow_html=True)
@@ -212,9 +212,9 @@ def render_post(row, prev_row=None, next_row=None):
 
     return f"""<div style="padding:10px 8px 12px 8px;font-family:-apple-system,'Malgun Gothic',sans-serif;">
 <div style="font-size:11px;color:#aaa;letter-spacing:0.3px;font-weight:600;">DART 공시</div>
-<div style="font-size:18px;line-height:1.7;color:#222;padding:4px 0 10px 0;">{dart}</div>
+<div style="font-size:17px;line-height:1.7;color:#222;padding:4px 0 10px 0;">{dart}</div>
 <div style="border-top:1px solid #f0f0f0;padding-top:8px;font-size:11px;color:#aaa;letter-spacing:0.3px;font-weight:600;">뉴스 모멘텀</div>
-<div style="font-size:18px;line-height:1.7;color:#222;padding:4px 0 2px 0;">{news}</div>
+<div style="font-size:17px;line-height:1.7;color:#222;padding:4px 0 2px 0;">{news}</div>
 {nav_html}
 </div>"""
 
@@ -359,5 +359,6 @@ with tab3:
                 with b1:
                     if st.button("해제", key=f"ubk_{row['id']}"): db.toggle_bookmark(row['id']); st.rerun()
                 st.markdown(render_post(row), unsafe_allow_html=True)
+
 
 
