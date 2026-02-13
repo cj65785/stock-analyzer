@@ -131,8 +131,24 @@ ALL_COMPANIES, REGEX_CACHE, CODE_MAP = load_companies()
 async def analyze_news_with_gpt(company_name: str, articles: list) -> str:
     if not articles: return "-"
     articles.sort(key=lambda x: x['pub_date'], reverse=True)
-    context = "".join(f"[{a['pub_date'].strftime('%y.%m.%d')}] {a['title']}\n" for a in articles)
-    prompt = f"'{company_name}' 뉴스 요약. 호재 위주. 음슴체. 3줄 이내.\n{context}"
+    context = "".join(f"[{a['pub_date'].strftime('%Y.%m.%d')}] {a['title']}\n" for a in articles)
+    prompt = f"""당신은 주식 시장의 '모멘텀 전문 분석가'입니다. 
+        [작성 규칙]
+        1. "{company_name}"의 기업 가치(Valuation) 리레이팅을 유발할 수 있는 모든 모멘텀을 적을 것
+        ※ 모멘텀 :  '매출', '수출', '수주', '계약', '신제품', "양산", '캐파', 'M&A'
+        2. 반드시 "{company_name}" 회사와 직접 관련된 내용만 작성하며, 창작이 아닌 기사 속 내용만으로 작성할 것
+        3. 중복된 기사는 하나로 합치고, 구체적인 "숫자"나 "시기", "국가", "계약 상대방" 등이 언급된 경우 반드시 넣어주기 바랍니다.
+        4. 산업 전반의 동향, 다른 회사의 사례, 일반적인 시장 분석은 절대 포함하지 마십시오.
+        5. 문체: 개조식, 명사형 종결(~음, ~임, ~함), 인사말 및 미사여구 없는 핵심 내용만 작성할 것
+        
+        [출력 포맷]
+        1️⃣ 모멘텀 제목 (yyyy.mm.dd.)
+        - {company_name}의 모멘텀 관련 핵심 내용 요약
+        
+        2️⃣ 모멘텀 제목 (yyyy.mm.dd.)
+        - {company_name}의 모멘텀 관련 핵심 내용 요약
+
+{context}"""
     try:
         res = await openai_client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":prompt}], temperature=0.1)
         return res.choices[0].message.content
@@ -140,7 +156,23 @@ async def analyze_news_with_gpt(company_name: str, articles: list) -> str:
 
 async def analyze_dart_with_gpt(company_name: str, report_nm: str, dart_text: str) -> str:
     if not dart_text or len(dart_text) < 100: return "-"
-    prompt = f"'{company_name}' 공시({report_nm}) 요약. 핵심 모멘텀만. 음슴체. 3줄 이내.\n{dart_text[:30000]}"
+    prompt = f"""당신은 주식 시장의 '모멘텀 전문 분석가'입니다.
+        
+        [작성 규칙]
+        1. "{company_name}"의 기업 가치(Valuation) 리레이팅을 유발할 수 있는 모든 모멘텀을 적을 것
+        2. 신사업 진출, 신규 고객 확보, 증설, M&A, 퀄테스트 통과, 벤더 등록, 수출 지역 다변화 등 구체적인 근거를 포함할 것
+        3. 현황을 적는 것이 아닌, 기업 가치를 레벨업 시키는 핵심 성과 및 미래 기대감을 적을 것
+        4. 반드시 주어진 자료 내의 내용만으로 작성하며, 외부 지식을 가져오거나 없는 내용을 추론하지 말 것
+        5. 문체: 개조식, 명사형 종결(~음, ~임, ~함), 인사말 및 미사여구 없는 핵심 내용만 작성할 것
+        
+        [출력 포맷]
+        - 모멘텀 내용 1
+        
+        - 모멘텀 내용 2
+        
+        - 모멘텀 내용 3
+
+{dart_text[:30000]}"""
     try:
         res = await openai_client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":prompt}], temperature=0.1)
         return res.choices[0].message.content
