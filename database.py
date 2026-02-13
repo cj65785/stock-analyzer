@@ -16,7 +16,12 @@ class Database:
     
     def get_connection(self):
         """데이터베이스 연결"""
-        return psycopg2.connect(self.connection_string)
+        conn = psycopg2.connect(self.connection_string)
+        cursor = conn.cursor()
+        cursor.execute("SET timezone = 'Asia/Seoul'")
+        conn.commit()
+        cursor.close()
+        return conn
     
     def init_db(self):
         """데이터베이스 초기화"""
