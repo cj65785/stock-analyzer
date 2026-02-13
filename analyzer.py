@@ -34,10 +34,10 @@ class Config:
         ]
         
         self.TITLE_BLACKLIST = [
-            "특징주", "급락", "급등", "상한가", "폭등", "상승폭", "하락폭", "상승률",
+            "특징주", "목표가", "신고가", "급락", "급등", "상한가", "폭등", "상승폭", "하락폭", "상승률",
             "급등락", "장마감", "시황", "[특징주]", "[속보]","장을 마쳤다", "일 장중", "오늘의 주목주", "전날보다",
-            "상승 마감", "하락 마감", "주말뉴스 FULL", "동일업종 등락률", "거래일 종가", "투자 알고리즘",
-            "바이오스냅", "공시모음", "e공시", "e종목", "더밸류", "데일리인베스트",
+            "상승 마감", "하락 마감", "주말뉴스 FULL", "팍스경제TV","동일업종 등락률", "거래일 종가", "투자 알고리즘",
+            "브리핑", "바이오스냅", "공시모음", "e공시", "e종목", "더밸류", "데일리인베스트", "IB토마토", "인포스탁",
             "버핏 연구소", "리얼스탁", "한경유레카", "헬로스톡", "로보인베스팅", "골든클럽", "투자원정대", "오늘의 IR", "주요 공시", "IR Page",
             "스포츠", "법률신문", "조세회계", "표창", "훈장","기념식", "후원", "선임", "광고",
             "포럼", "증여", "상속", "수요예측", "문화대상", "브랜드평", "상장폐지", "로펌", "횡령", "VC 하우스", "주식쇼", "데이터랩",
@@ -107,14 +107,22 @@ def clean_body_final(text: str) -> str:
         text = text[:email_match.start()].strip()
     
     cutoff_patterns = [
-        r'더\s*보기', r'See more', r'저작권자', r'무단\s*전재', r'재배포\s*금지',
-        r'Copyright', r'All rights reserved', r'개인정보\s*보호', r'구독\s*신청', r'뉴스\s*스탠드', r'좋아요\s*슬퍼요',
+        r'관련\s*기사', r'다른\s*기사', r'추천\s*기사', r'인기\s*기사',
+        r'더\s*보기', r'See more', r'Tag\s*#', r'#바이오',
+        r'저작권자', r'무단\s*전재', r'재배포\s*금지',
+        r'Copyright', r'All rights reserved', r'개인정보\s*보호',
+        r'구독\s*신청', r'뉴스\s*스탠드', r'좋아요\s*슬퍼요',
+        r'기사\s*제보', r'댓글\s*작성', r'많이\s*본\s*뉴스',
+        r'지금\s*뜨는', r'공유하기', r'URL\s*복사',
+        r'글자\s*크기', r'기사\s*듣기', r'인쇄하기', r'읽기모드',
     ]
     
+    # cutoff는 본문 후반부(뒤쪽 70%)에서만 적용 — 상단 UI 요소에 걸리는 것 방지
+    cutoff_start = len(text) * 3 // 10
     for pattern in cutoff_patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
+        match = re.search(pattern, text[cutoff_start:], re.IGNORECASE)
         if match:
-            text = text[:match.start()].strip()
+            text = text[:cutoff_start + match.start()].strip()
     
     lines = text.split('\n')
     clean_lines = []
@@ -492,5 +500,3 @@ async def run_news_pipeline(target: str, config: Config, regex_cache: RegexCache
     
     valid.sort(key=lambda x: x['pub_date'], reverse=True)
     return valid, len(valid)
-
-
