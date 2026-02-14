@@ -39,15 +39,23 @@ class Database:
                 news_result TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 status TEXT DEFAULT '완료',
-                is_bookmarked BOOLEAN DEFAULT FALSE
+                is_bookmarked BOOLEAN DEFAULT FALSE,
+                is_delete_candidate BOOLEAN DEFAULT FALSE
             )
         ''')
         
-        # is_bookmarked 컬럼이 없으면 추가 (기존 테이블 대응)
+        # 기존 테이블 대응: 컬럼 없으면 추가
         try:
             cursor.execute('''
                 ALTER TABLE analysis_results 
                 ADD COLUMN IF NOT EXISTS is_bookmarked BOOLEAN DEFAULT FALSE
+            ''')
+        except:
+            pass
+        try:
+            cursor.execute('''
+                ALTER TABLE analysis_results 
+                ADD COLUMN IF NOT EXISTS is_delete_candidate BOOLEAN DEFAULT FALSE
             ''')
         except:
             pass
@@ -64,6 +72,10 @@ class Database:
         cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_bookmarked 
             ON analysis_results(is_bookmarked)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_delete_candidate 
+            ON analysis_results(is_delete_candidate)
         ''')
         
         conn.commit()
@@ -136,6 +148,53 @@ class Database:
         conn.commit()
         cursor.close()
         conn.close()
+    
+    def toggle_delete_candidate(self, result_id: int):
+        """삭제대상 토글"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            UPDATE analysis_results 
+            SET is_delete_candidate = NOT is_delete_candidate 
+            WHERE id = %s
+        ''', (result_id,))
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+    
+    def get_delete_candidates(self) -> List[Dict]:
+        """삭제대상 결과만 조회"""
+        conn = self.get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        
+        cursor.execute('''
+            SELECT * FROM analysis_results 
+            WHERE is_delete_candidate = TRUE
+            ORDER BY created_at DESC
+        ''')
+        
+        results = cursor.fetchall()
+        
+        cursor.close()
+        conn.close()
+        
+        return [dict(row) for row in results]
+    
+    def bulk_delete_candidates(self):
+        """삭제대상 일괄 삭제"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM analysis_results WHERE is_delete_candidate = TRUE')
+        deleted = cursor.rowcount
+        
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        return deleted
     
     def search_results(self, keyword: str) -> List[Dict]:
         """종목명 검색"""

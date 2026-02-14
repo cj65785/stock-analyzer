@@ -221,7 +221,7 @@ def render_post(row, prev_row=None, next_row=None):
 
 # ==================== UI ====================
 
-tab1, tab2, tab3 = st.tabs(["수집", "결과", "보관"])
+tab1, tab2, tab3, tab4 = st.tabs(["수집", "결과", "보관", "삭제대상"])
 
 # ──── [1] 수집 ────
 with tab1:
@@ -307,14 +307,18 @@ with tab2:
             dt = row['created_at']
             if isinstance(dt, str): dt = datetime.strptime(dt, '%Y-%m-%d %H:%M:%S')
             mark = " ★" if row.get('is_bookmarked') else ""
+            dc_mark = " 🗑" if row.get('is_delete_candidate') else ""
 
-            with st.expander(f"**{row['company_name']}**{mark}　·　{dt.strftime('%m.%d %H:%M')}"):
+            with st.expander(f"**{row['company_name']}**{mark}{dc_mark}　·　{dt.strftime('%m.%d %H:%M')}"):
                 # 버튼 (왼쪽 정렬, 나머지 공간은 빈칸)
-                b1, b2, _ = st.columns([1.5, 1.5, 9])
+                b1, b2, b3, _ = st.columns([1.5, 1.5, 1.5, 7])
                 with b1:
                     lbl = "★ 해제" if row.get('is_bookmarked') else "☆ 보관"
                     if st.button(lbl, key=f"bk_{row['id']}"): db.toggle_bookmark(row['id']); st.rerun()
                 with b2:
+                    dc_lbl = "🗑 해제" if row.get('is_delete_candidate') else "🗑 대상"
+                    if st.button(dc_lbl, key=f"dc_{row['id']}"): db.toggle_delete_candidate(row['id']); st.rerun()
+                with b3:
                     if st.button("삭제", key=f"del_{row['id']}"): db.delete_result(row['id']); st.rerun()
 
                 prev_r = targets[gidx - 1] if gidx > 0 else None
@@ -360,5 +364,43 @@ with tab3:
                     if st.button("해제", key=f"ubk_{row['id']}"): db.toggle_bookmark(row['id']); st.rerun()
                 st.markdown(render_post(row), unsafe_allow_html=True)
 
+# ──── [4] 삭제대상 ────
+with tab4:
+    dc_list = db.get_delete_candidates()
 
+    dc1, dc2 = st.columns([5, 5])
+    with dc1:
+        if dc_list:
+            # 기업명만 Excel 다운로드
+            dc_names = sorted(set(r['company_name'] for r in dc_list))
+            df_dc = pd.DataFrame({'기업명': dc_names})
+            out_dc = BytesIO()
+            with pd.ExcelWriter(out_dc, engine='openpyxl') as writer:
+                df_dc.to_excel(writer, index=False)
+            out_dc.seek(0)
+            st.download_button("Excel (기업명)", data=out_dc, file_name="delete_candidates.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    with dc2:
+        if dc_list:
+            if st.button("일괄 삭제", type="primary"):
+                deleted = db.bulk_delete_candidates()
+                st.toast(f"{deleted}건 삭제 완료")
+                st.rerun()
 
+    st.markdown(f'<div style="display:flex;justify-content:space-between;padding:4px;border-bottom:2px solid #bbb;">'
+                f'<span style="font-size:11px;color:#999;font-weight:600;">종목명</span>'
+                f'<span style="font-size:11px;color:#999;font-weight:600;">{len(dc_list)}건</span></div>', unsafe_allow_html=True)
+
+    if not dc_list:
+        st.caption("삭제대상 항목이 없습니다.")
+    else:
+        for row in dc_list:
+            dt = row['created_at']
+            if isinstance(dt, str): dt = datetime.strptime(dt, '%Y-%m-%d %H:%M:%S')
+            with st.expander(f"🗑 **{row['company_name']}**　·　{dt.strftime('%m.%d %H:%M')}"):
+                b1, b2, _ = st.columns([1.5, 1.5, 9])
+                with b1:
+                    if st.button("해제", key=f"udc_{row['id']}"): db.toggle_delete_candidate(row['id']); st.rerun()
+                with b2:
+                    if st.button("즉시삭제", key=f"ddel_{row['id']}"): db.delete_result(row['id']); st.rerun()
+                st.markdown(render_post(row), unsafe_allow_html=True)
